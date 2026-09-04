@@ -81,7 +81,9 @@ export async function draftQuoteForRfq(rfqId: string) {
 
     /** Price and gate one requested quantity through the production path. */
     const at = (qty: number) => {
-      const priced = priceFromCandidates(resolved.candidates, qty);
+      const priced = priceFromCandidates(resolved.candidates, qty, {
+        currentCostIndex: resolved.currentCostIndex,
+      });
       const evaluated = evaluateConfidence({
         fields,
         matchScore: resolved.matchScore,

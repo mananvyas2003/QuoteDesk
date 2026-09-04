@@ -84,6 +84,9 @@ model HistoricalQuoteLine {
   unitPrice         Float
   sku               String?
   specHash          String?
+  /// Optional material cost index at the time of this quote, supplied by the shop.
+  /// Null means no index — prices are then used unadjusted and no index is invented.
+  costIndex         Float?
 
   historicalQuote HistoricalQuote @relation(fields: [historicalQuoteId], references: [id], onDelete: Cascade)
 }

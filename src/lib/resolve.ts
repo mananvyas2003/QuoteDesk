@@ -31,6 +31,12 @@ export type ResolveResult = {
   matchScore: number;
   candidates: Comparable[];
   blockers: Blocker[];
+  /**
+   * The most recent material cost index the shop has supplied anywhere in this
+   * workspace, used as the reference point for back-adjusting older prices.
+   * Null when no index exists — prices are then used unadjusted.
+   */
+  currentCostIndex: number | null;
 };
 
 function normalize(s: string): string {
@@ -143,6 +149,15 @@ export async function resolveAgainstHistory(
   for (const r of [...partRows, ...accountRows, ...workspaceRows]) byId.set(r.id, r);
   const history = [...byId.values()];
 
+  // Reference index = the newest index the shop has actually supplied. Never
+  // synthesised: when no line carries one, this stays null and no price is
+  // adjusted.
+  const currentCostIndex =
+    [...history]
+      .filter((h) => h.costIndex != null)
+      .sort((a, b) => b.historicalQuote.quotedAt.getTime() - a.historicalQuote.quotedAt.getTime())[0]
+      ?.costIndex ?? null;
+
   const toComparable = (h: (typeof workspaceRows)[number]): Comparable => ({
     id: h.id,
     description: h.description,
@@ -154,7 +169,7 @@ export async function resolveAgainstHistory(
     scope: accountId && accountLineIds.has(h.id) ? "account" : "workspace",
     outcome: h.historicalQuote.outcome,
     competitorPrice: h.historicalQuote.competitorPrice,
-    costIndex: null,
+    costIndex: h.costIndex,
   });
 
   /** Pricing a new account off another customer's history is an assumption. */
@@ -187,6 +202,7 @@ export async function resolveAgainstHistory(
         matchScore: 0.9,
         candidates: noteScope(byQuote.map(toComparable)),
         blockers,
+        currentCostIndex,
       };
     }
   }
@@ -227,6 +243,7 @@ export async function resolveAgainstHistory(
       matchScore: 0,
       candidates: [],
       blockers,
+      currentCostIndex,
     };
   }
 
@@ -238,6 +255,7 @@ export async function resolveAgainstHistory(
     matchScore: best.score,
     candidates: noteScope(scored.slice(0, scoredPoolCap).map(({ h }) => toComparable(h))),
     blockers,
+    currentCostIndex,
   };
 }
 
