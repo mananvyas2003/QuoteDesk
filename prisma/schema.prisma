@@ -1,0 +1,239 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+/// Shop / tenant workspace (single-tenant V1)
+model Workspace {
+  id                  String   @id @default(cuid())
+  name                String
+  vertical            String   @default("metal_fabrication")
+  marginFloorPct      Float    @default(25)
+  /// JSON: materials[], maxSizeIn, toleranceClasses[], certifications[], maxLeadDays, minOrderValue
+  capabilityEnvelope  String   @default("{}")
+  ingestEmail         String?
+  onboardedAt         DateTime?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  users             User[]
+  accounts          Account[]
+  historicalQuotes  HistoricalQuote[]
+  vendorPrices      VendorPrice[]
+  rfqs              Rfq[]
+}
+
+model User {
+  id          String   @id @default(cuid())
+  workspaceId String
+  email       String   @unique
+  name        String
+  role        String   @default("estimator") // estimator | owner | controller
+  createdAt   DateTime @default(now())
+
+  workspace   Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  editEvents  EditEvent[]
+  assumptions Assumption[]
+}
+
+/// Buyer / customer account matched from inbound RFQs
+model Account {
+  id          String   @id @default(cuid())
+  workspaceId String
+  name        String
+  domain      String?
+  createdAt   DateTime @default(now())
+
+  workspace        Workspace         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  rfqs             Rfq[]
+  historicalQuotes HistoricalQuote[]
+}
+
+model HistoricalQuote {
+  id          String   @id @default(cuid())
+  workspaceId String
+  accountId   String?
+  quoteNumber String?
+  quotedAt    DateTime
+  total       Float?
+  rawRef      String?
+  createdAt   DateTime @default(now())
+
+  workspace Workspace              @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  account   Account?               @relation(fields: [accountId], references: [id])
+  lines     HistoricalQuoteLine[]
+}
+
+model HistoricalQuoteLine {
+  id                String  @id @default(cuid())
+  historicalQuoteId String
+  description       String
+  partNumber        String?
+  material          String?
+  finish            String?
+  qty               Float
+  unitPrice         Float
+  sku               String?
+  specHash          String?
+
+  historicalQuote HistoricalQuote @relation(fields: [historicalQuoteId], references: [id], onDelete: Cascade)
+}
+
+model VendorPrice {
+  id          String   @id @default(cuid())
+  workspaceId String
+  sku         String?
+  description String
+  material    String?
+  unitPrice   Float
+  asOfDate    DateTime
+  vendorName  String?
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+}
+
+model Rfq {
+  id          String    @id @default(cuid())
+  workspaceId String
+  accountId   String?
+  receivedAt  DateTime  @default(now())
+  deadline    DateTime?
+  channel     String    @default("upload") // email | upload | forward
+  subject     String?
+  fromEmail   String?
+  fromName    String?
+  rawBody     String?
+  /// JSON array of { fileName, mimeType, storagePath }
+  rawRefs     String    @default("[]")
+  status      String    @default("ingested") // ingested | drafted | reviewing | sent | closed
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  account   Account?  @relation(fields: [accountId], references: [id])
+  lines     RfqLine[]
+  quote     Quote?
+}
+
+model RfqLine {
+  id           String  @id @default(cuid())
+  rfqId        String
+  lineNumber   Int
+  rawText      String
+  qty          Float
+  /// JSON number array e.g. [100,500,1000]
+  qtyBreaks    String  @default("[]")
+  /// JSON extracted fields: description, partNumber, material, finish, tolerance, revision
+  extractedFields String @default("{}")
+  /// JSON { file, page, bbox?: [x,y,w,h], snippet }
+  sourcePtr    String  @default("{}")
+  extractConf  Float   @default(0.5)
+
+  rfq           Rfq            @relation(fields: [rfqId], references: [id], onDelete: Cascade)
+  resolvedItem  ResolvedItem?
+}
+
+model ResolvedItem {
+  id         String @id @default(cuid())
+  rfqLineId  String @unique
+  sku        String?
+  specHash   String?
+  matchType  String // exact | near | historical_ref | none
+  matchScore Float  @default(0)
+
+  rfqLine     RfqLine      @relation(fields: [rfqLineId], references: [id], onDelete: Cascade)
+  priceBasis  PriceBasis?
+  quoteLines  QuoteLine[]
+}
+
+model PriceBasis {
+  id               String   @id @default(cuid())
+  resolvedItemId   String   @unique
+  sourceType       String   // historical_quote | vendor_list | cost_record
+  sourceId         String?
+  unitPrice        Float?
+  asOfDate         DateTime?
+  comparableCount  Int      @default(0)
+  variance         Float?   // coefficient of variation
+  citationLabel    String?
+
+  resolvedItem ResolvedItem @relation(fields: [resolvedItemId], references: [id], onDelete: Cascade)
+  quoteLines   QuoteLine[]
+}
+
+model Quote {
+  id          String    @id @default(cuid())
+  rfqId       String    @unique
+  answerType  String    // priced | priced_with_assumptions | decline | clarify
+  sentAt      DateTime?
+  total       Float?
+  marginPct   Float?
+  declineReason String?
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  rfq     Rfq         @relation(fields: [rfqId], references: [id], onDelete: Cascade)
+  lines   QuoteLine[]
+  outcome Outcome?
+}
+
+model QuoteLine {
+  id              String  @id @default(cuid())
+  quoteId         String
+  resolvedItemId  String?
+  priceBasisId    String?
+  lineNumber      Int
+  description     String
+  qty             Float
+  unitPrice       Float?
+  /// GREEN | AMBER | RED
+  confidenceState String
+  clarification   String?
+  leadDays        Int?
+
+  quote        Quote         @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+  resolvedItem ResolvedItem? @relation(fields: [resolvedItemId], references: [id])
+  priceBasis   PriceBasis?   @relation(fields: [priceBasisId], references: [id])
+  assumption   Assumption?
+  editEvents   EditEvent[]
+}
+
+model Assumption {
+  id          String    @id @default(cuid())
+  quoteLineId String    @unique
+  text        String
+  confirmedBy String?
+  confirmedAt DateTime?
+
+  quoteLine QuoteLine @relation(fields: [quoteLineId], references: [id], onDelete: Cascade)
+  confirmer User?     @relation(fields: [confirmedBy], references: [id])
+}
+
+model EditEvent {
+  id          String   @id @default(cuid())
+  quoteLineId String
+  field       String
+  oldValue    String?
+  newValue    String?
+  reasonCode  String?  // wrong_part | stale_price | margin_too_thin | wrong_qty_break | customer_specific
+  userId      String?
+  at          DateTime @default(now())
+
+  quoteLine QuoteLine @relation(fields: [quoteLineId], references: [id], onDelete: Cascade)
+  user      User?      @relation(fields: [userId], references: [id])
+}
+
+model Outcome {
+  id              String   @id @default(cuid())
+  quoteId         String   @unique
+  result          String   // won | lost | no_decision
+  competitorPrice Float?
+  marginRealized  Float?
+  at              DateTime @default(now())
+
+  quote Quote @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+}

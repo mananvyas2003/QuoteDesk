@@ -1,36 +1,53 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# QuoteDesk
 
-## Getting Started
+AI estimator that answers inbound RFQs for metal fabrication shops.
 
-First, run the development server:
+V1 implements the three PRD features: **ingest → draft (GREEN/AMBER/RED) → approve / send / learn**.
+
+## Stack
+
+- Next.js 16 (App Router) + TypeScript + Tailwind
+- Prisma 5 + SQLite (local). Swap `DATABASE_URL` to Postgres for production.
+- Deterministic extraction + historical price-basis resolution (multimodal OCR can replace the extractor later)
+
+## Setup
 
 ```bash
+npm install
+npx prisma db push
+npm run db:seed
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000).
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Seeded shop: **Summit Metal Fab** (metal fabrication) with historical quote corpus.
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+## Demo path
 
-## Learn More
+1. **Inbox** — RFQ list + answer coverage
+2. **Ingest** — paste an email (sample pre-filled) → extract lines with source pointers → auto-draft
+3. **Review** — source left / draft right; edit prices (captured as training signals); confirm AMBER assumptions; copy-out or mark sent
+4. **Outcome** — after send, record won / lost / no decision
+5. **Settings** — margin floor + capability envelope (controller controls)
+6. **History** — priced-line corpus used for price basis
 
-To learn more about Next.js, take a look at the following resources:
+## PRD alignment
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+| Feature | Status |
+|---|---|
+| §5.1 Ingest + source pointers | Done (paste/forward text; OCR stub-ready) |
+| §5.2 Priced / assumptions / decline / clarify | Done |
+| §5.3 Approve, edit capture, outcome | Done |
+| §5.4 Confidence gating | Done (N=3, M=12mo, CV=15%) |
+| §6 Data model | Done |
+| §7 Cold start / onboarding | Done |
+| Email IMAP auto-forward | Stub (ingest email shown in settings) |
+| Scanned raster title-block OCR | Not yet — text/table extraction only |
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+## Scripts
 
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- `npm run dev` — local app
+- `npm run db:seed` — reset demo corpus
+- `npm run db:studio` — Prisma Studio
+- `npm run build` — production build
