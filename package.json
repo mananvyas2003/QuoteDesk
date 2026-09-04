@@ -9,7 +9,9 @@
     "lint": "eslint",
     "db:push": "prisma db push",
     "db:seed": "tsx prisma/seed.ts",
-    "db:studio": "prisma studio"
+    "db:studio": "prisma studio",
+    "test": "node --import tsx --test \"tests/**/*.test.ts\"",
+    "confidence:dist": "tsx scripts/confidence-distribution.ts"
   },
   "dependencies": {
     "@prisma/client": "5.22.0",
