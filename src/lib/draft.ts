@@ -3,7 +3,6 @@ import {
   buildAssumption,
   buildClarification,
   evaluateConfidence,
-  missingSpec,
   violatesEnvelope,
   type PricingSignal,
 } from "./confidence";
@@ -78,6 +77,7 @@ export async function draftQuoteForRfq(rfqId: string) {
     const belowMarginFloor = false; // cost_record path not wired; margin floor UI still applies on edit
 
     const signal: PricingSignal = {
+      fields,
       matchScore: resolved.matchScore,
       matchType: resolved.matchType,
       comparableCount: priced.comparableCount,
@@ -85,14 +85,13 @@ export async function draftQuoteForRfq(rfqId: string) {
       unitPrice: priced.unitPrice,
       asOfDate: priced.asOfDate,
       inputQuality: line.extractConf,
-      missingSpec: missingSpec(fields),
-      envelopeViolation: envelopeCheck.violated,
-      belowMarginFloor,
+      envelope: envelopeCheck,
     };
 
-    let confidence = evaluateConfidence(signal);
-    // Override: any priced line below margin floor → AMBER (PRD)
-    if (confidence === "GREEN" && belowMarginFloor) confidence = "AMBER";
+    const evaluated = evaluateConfidence(signal);
+    let confidence = evaluated.state;
+    let blockers = evaluated.blockers;
+    void belowMarginFloor;
 
     const resolvedItem = await prisma.resolvedItem.create({
       data: {
@@ -121,6 +120,14 @@ export async function draftQuoteForRfq(rfqId: string) {
       priceBasisId = pb.id;
     } else if (confidence !== "RED") {
       confidence = "RED";
+      blockers = [
+        ...blockers,
+        {
+          code: "no_price_basis",
+          kind: "unassumable" as const,
+          detail: "no priced comparable is available as a price basis",
+        },
+      ];
     }
 
     const desc =
@@ -131,19 +138,11 @@ export async function draftQuoteForRfq(rfqId: string) {
     let assumptionText: string | null = null;
     let unitPrice: number | null = priced.unitPrice;
 
-    if (envelopeCheck.violated) {
-      confidence = "RED";
+    if (confidence === "RED") {
       unitPrice = null;
-      clarification = envelopeCheck.reason ?? buildClarification(fields, lineLabel);
-    } else if (confidence === "RED") {
-      unitPrice = null;
-      clarification = buildClarification(fields, lineLabel);
+      clarification = buildClarification({ blockers, fields, lineLabel });
     } else if (confidence === "AMBER") {
-      assumptionText = buildAssumption({
-        fields,
-        signal,
-        citationLabel: priced.citationLabel,
-      });
+      assumptionText = buildAssumption({ blockers, citationLabel: priced.citationLabel });
     }
 
     // Cost check vs margin floor: if we had cost, enforce; for now annotate AMBER when variance high
