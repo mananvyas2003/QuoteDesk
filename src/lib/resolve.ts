@@ -152,8 +152,8 @@ export async function resolveAgainstHistory(
     unitPrice: h.unitPrice,
     quotedAt: h.historicalQuote.quotedAt,
     scope: accountId && accountLineIds.has(h.id) ? "account" : "workspace",
-    outcome: null,
-    competitorPrice: null,
+    outcome: h.historicalQuote.outcome,
+    competitorPrice: h.historicalQuote.competitorPrice,
     costIndex: null,
   });
 
@@ -353,6 +353,28 @@ export function priceFromCandidates(
 
   const base = { qtyRequested, qtyRangeMin, qtyRangeMax, blockers };
 
+  /**
+   * A lost quote with a known competitor price is a censored upper bound: we
+   * know the job went below that number. Deriving a price above it is not
+   * wrong, but it is a judgement the estimator must see.
+   */
+  const noteCompetitorBound = (price: number) => {
+    const bound = pool
+      .filter((c) => c.outcome === "lost" && c.competitorPrice != null)
+      .reduce<number | null>(
+        (lo, c) => (lo == null || c.competitorPrice! < lo ? c.competitorPrice! : lo),
+        null,
+      );
+    if (bound != null && price > bound) {
+      blockers.push({
+        code: BLOCKER_CODES.priorLossBelowPrice,
+        kind: "assumable",
+        detail: `we previously lost this item family at a competitor price of $${bound.toFixed(2)}, below the $${price.toFixed(2)} derived here`,
+      });
+    }
+    return price;
+  };
+
   // 3. Single comparable.
   if (weighted.length === 1) {
     const only = weighted[0];
@@ -363,7 +385,7 @@ export function priceFromCandidates(
     });
     return {
       ...base,
-      unitPrice: round(only.price),
+      unitPrice: round(noteCompetitorBound(only.price)),
       method: "single_comparable",
       asOfDate: only.c.quotedAt,
       comparableCount: 1,
@@ -393,7 +415,7 @@ export function priceFromCandidates(
       const newest = newestOf(pool);
       return {
         ...base,
-        unitPrice: round(price),
+        unitPrice: round(noteCompetitorBound(price)),
         method: "loglog_fit",
         asOfDate: newest.quotedAt,
         comparableCount: pool.length,
@@ -434,7 +456,7 @@ export function priceFromCandidates(
 
   return {
     ...base,
-    unitPrice: round(price),
+    unitPrice: round(noteCompetitorBound(price)),
     method: "nearest_qty",
     asOfDate: newest.quotedAt,
     comparableCount: group.length,
