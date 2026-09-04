@@ -160,6 +160,15 @@ model PriceBasis {
   comparableCount  Int      @default(0)
   variance         Float?   // coefficient of variation
   citationLabel    String?
+  /// How the unit price was derived: loglog_fit | nearest_qty | single_comparable | none
+  method           String   @default("none")
+  /// The quantity this basis was evaluated at, and the quantity range of the comparables used
+  qtyRequested     Float?
+  qtyRangeMin      Float?
+  qtyRangeMax      Float?
+  /// ln(unit_price) = a + b*ln(qty) fit diagnostics, when method = loglog_fit
+  fitSlope         Float?
+  fitR2            Float?
 
   resolvedItem ResolvedItem @relation(fields: [resolvedItemId], references: [id], onDelete: Cascade)
   quoteLines   QuoteLine[]
@@ -194,6 +203,8 @@ model QuoteLine {
   confidenceState String
   clarification   String?
   leadDays        Int?
+  /// JSON array of { qty, unitPrice, method, confidenceState, blockerCodes[] } — one per requested quantity break
+  qtyBreakPricing String @default("[]")
 
   quote        Quote         @relation(fields: [quoteId], references: [id], onDelete: Cascade)
   resolvedItem ResolvedItem? @relation(fields: [resolvedItemId], references: [id])

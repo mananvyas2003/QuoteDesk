@@ -341,11 +341,16 @@ function makeLine(args: {
 
   if (Object.keys(sources).length) fields.sources = sources;
 
+  // When the buyer asks for 100/500/1000, the line's own quantity is the first
+  // break, not whatever loose number the prose parser happened to pick up.
+  const qtyBreaks = extractQtyBreaks(args.rawText);
+  const qty = qtyBreaks.length && !qtyBreaks.includes(args.qty) ? qtyBreaks[0] : args.qty;
+
   return {
     lineNumber: args.lineNumber,
     rawText: args.rawText,
-    qty: args.qty,
-    qtyBreaks: extractQtyBreaks(args.rawText),
+    qty,
+    qtyBreaks,
     extractedFields: fields,
     sourcePtr: pointer({ file: args.fileName, line: args.sourceLine, snippet: args.snippet }),
     extractConf: args.conf,
