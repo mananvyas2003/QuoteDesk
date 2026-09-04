@@ -24,10 +24,13 @@ type Row = {
 
 async function main() {
   const markdown = process.argv.includes("--markdown");
+  // --no-costs loads the same corpus without cost records, to show what
+  // workspace.requireCostForGreen (Task 6) costs in GREEN coverage.
+  const withCostRecords = !process.argv.includes("--no-costs");
   const db = await openScratchDb("confdist");
 
   try {
-    const { workspace } = await buildBenchWorkspace(db.prisma);
+    const { workspace } = await buildBenchWorkspace(db.prisma, { withCostRecords });
     const { ingestRfq } = await import("../src/lib/ingest");
 
     const rows: Row[] = [];
@@ -63,7 +66,10 @@ async function main() {
     const pct = (n: number) => (total ? ((n / total) * 100).toFixed(1) : "0.0");
 
     if (markdown) {
-      console.log(`Corpus: ${QUOTE_SUMMARY(await corpusStats(db.prisma, workspace.id))}`);
+      console.log(
+        `Corpus: ${QUOTE_SUMMARY(await corpusStats(db.prisma, workspace.id))}` +
+          (withCostRecords ? ", cost records loaded" : ", **no cost records**"),
+      );
       console.log("");
       console.log("| State | Lines | % of lines |");
       console.log("|---|---:|---:|");

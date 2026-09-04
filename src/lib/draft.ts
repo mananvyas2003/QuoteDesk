@@ -12,6 +12,7 @@ import type {
   ExtractedFields,
 } from "./types";
 import { priceFromCandidates, resolveAgainstHistory, type PricedResult } from "./resolve";
+import { marginPct, resolveCost } from "./cost";
 
 function parseJson<T>(raw: string, fallback: T): T {
   try {
@@ -64,6 +65,7 @@ export async function draftQuoteForRfq(rfqId: string) {
     leadDays: number | null;
     resolvedItemId: string;
     priceBasisId: string | null;
+    marginPct: number | null;
     qtyBreakPricing: BreakPricing[];
     envelopeReason?: string;
   };
@@ -78,6 +80,15 @@ export async function draftQuoteForRfq(rfqId: string) {
     const extractionBlockers = parseJson<Blocker[]>(line.extractionBlockers, []);
     const resolved = await resolveAgainstHistory(rfq.workspaceId, fields, rfq.accountId);
     const envelopeCheck = violatesEnvelope(fields, envelope);
+
+    // PRD §5.4 override rule. Previously hard-coded to false with the comment
+    // "cost_record path not wired", which made the check that gets a pilot
+    // approved a no-op.
+    const cost = await resolveCost(rfq.workspaceId, {
+      sku: resolved.sku,
+      specHash: resolved.specHash,
+    });
+    const floorPct = rfq.workspace.marginFloorPct / 100;
 
     /** Price and gate one requested quantity through the production path. */
     const at = (qty: number) => {
@@ -95,6 +106,12 @@ export async function draftQuoteForRfq(rfqId: string) {
         inputQuality: line.extractConf,
         envelope: envelopeCheck,
         extraBlockers: [...extractionBlockers, ...resolved.blockers, ...priced.blockers],
+        margin: {
+          costKnown: cost != null,
+          marginPct: marginPct(priced.unitPrice, cost?.unitCost ?? null),
+          floorPct,
+          requireCostForGreen: rfq.workspace.requireCostForGreen,
+        },
       });
       return { priced, ...evaluated };
     };
@@ -188,6 +205,7 @@ export async function draftQuoteForRfq(rfqId: string) {
       leadDays: confidence === "RED" ? null : 14,
       resolvedItemId: resolvedItem.id,
       priceBasisId,
+      marginPct: marginPct(unitPrice, cost?.unitCost ?? null),
       qtyBreakPricing: breaks,
       envelopeReason: envelopeCheck.violated ? envelopeCheck.reason : undefined,
     });
@@ -214,12 +232,19 @@ export async function draftQuoteForRfq(rfqId: string) {
   const pricedLines = draftLines.filter((l) => l.unitPrice != null);
   const total = pricedLines.reduce((s, l) => s + (l.unitPrice ?? 0) * l.qty, 0);
 
+  // Quote margin is the value-weighted margin of the lines whose cost is known.
+  const costed = pricedLines.filter((l) => l.marginPct != null);
+  const costedValue = costed.reduce((s, l) => s + (l.unitPrice ?? 0) * l.qty, 0);
+  const quoteMarginPct = costedValue
+    ? costed.reduce((s, l) => s + l.marginPct! * (l.unitPrice ?? 0) * l.qty, 0) / costedValue
+    : null;
+
   const quote = await prisma.quote.create({
     data: {
       rfqId,
       answerType,
       total: pricedLines.length ? total : null,
-      marginPct: null,
+      marginPct: quoteMarginPct,
       declineReason,
       lines: {
         create: draftLines.map((l) => ({
@@ -232,6 +257,7 @@ export async function draftQuoteForRfq(rfqId: string) {
           leadDays: l.leadDays,
           resolvedItemId: l.resolvedItemId,
           priceBasisId: l.priceBasisId,
+          marginPct: l.marginPct,
           qtyBreakPricing: JSON.stringify(l.qtyBreakPricing),
           ...(l.assumptionText
             ? { assumption: { create: { text: l.assumptionText } } }

@@ -138,7 +138,11 @@ const COSTS: Array<{ sku: string; unitCost: number }> = [
   { sku: "FAB-WF-2436", unitCost: 235.0 },
 ];
 
-export async function buildBenchWorkspace(prisma: PrismaClient) {
+export async function buildBenchWorkspace(
+  prisma: PrismaClient,
+  opts?: { withCostRecords?: boolean },
+) {
+  const withCostRecords = opts?.withCostRecords ?? true;
   const workspace = await prisma.workspace.create({
     data: {
       name: "Bench Fab (instrument corpus)",
@@ -198,7 +202,7 @@ export async function buildBenchWorkspace(prisma: PrismaClient) {
   }
 
   const costRecord = (prisma as unknown as Record<string, unknown>).costRecord;
-  if (costRecord) {
+  if (costRecord && withCostRecords) {
     await (costRecord as { createMany: (a: unknown) => Promise<unknown> }).createMany({
       data: COSTS.map((c) => ({
         workspaceId: workspace.id,

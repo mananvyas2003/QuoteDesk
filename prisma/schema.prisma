@@ -13,6 +13,10 @@ model Workspace {
   name                String
   vertical            String   @default("metal_fabrication")
   marginFloorPct      Float    @default(25)
+  /// PRD §5.4 + onboarding: when true (default), a line whose margin cannot be
+  /// verified against the floor — because no cost record resolves — cannot be
+  /// GREEN. Unknown margin must not silently pass.
+  requireCostForGreen Boolean  @default(true)
   /// JSON: materials[], maxSizeIn, toleranceClasses[], certifications[], maxLeadDays, minOrderValue
   capabilityEnvelope  String   @default("{}")
   ingestEmail         String?
@@ -24,7 +28,26 @@ model Workspace {
   accounts          Account[]
   historicalQuotes  HistoricalQuote[]
   vendorPrices      VendorPrice[]
+  costRecords       CostRecord[]
   rfqs              Rfq[]
+}
+
+/// Unit cost for an item, so margin is computable against the workspace floor.
+model CostRecord {
+  id          String   @id @default(cuid())
+  workspaceId String
+  specHash    String?
+  sku         String?
+  unitCost    Float
+  asOfDate    DateTime
+  /// vendor_list | manual | erp_export
+  source      String
+  createdAt   DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, sku])
+  @@index([workspaceId, specHash])
 }
 
 model User {
@@ -163,7 +186,8 @@ model ResolvedItem {
 model PriceBasis {
   id               String   @id @default(cuid())
   resolvedItemId   String   @unique
-  sourceType       String   // historical_quote | vendor_list | cost_record
+  /// historical_quote | vendor_list | cost_record
+  sourceType       String
   sourceId         String?
   unitPrice        Float?
   asOfDate         DateTime?
@@ -213,6 +237,8 @@ model QuoteLine {
   confidenceState String
   clarification   String?
   leadDays        Int?
+  /// (price - cost) / price, when a cost record resolved. Null when cost is unknown.
+  marginPct       Float?
   /// JSON array of { qty, unitPrice, method, confidenceState, blockerCodes[] } — one per requested quantity break
   qtyBreakPricing String @default("[]")
 

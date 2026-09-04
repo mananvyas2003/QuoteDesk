@@ -51,6 +51,22 @@ export default async function SettingsPage() {
             Any derived price that would fall below this floor is forced to AMBER.
           </span>
         </label>
+        <label className="flex items-start gap-2 text-sm">
+          <input
+            name="requireCostForGreen"
+            type="checkbox"
+            defaultChecked={workspace.requireCostForGreen}
+            className="mt-1"
+          />
+          <span>
+            <span className="font-medium">Require a cost record for GREEN</span>
+            <span className="mt-1 block text-xs text-[var(--ink-muted)]">
+              When no cost record resolves, margin cannot be checked against the
+              floor. With this on, such a line is held at AMBER rather than passing
+              silently.
+            </span>
+          </span>
+        </label>
         <label className="block text-sm">
           <span className="mb-1 block font-medium">Materials (comma-separated)</span>
           <input

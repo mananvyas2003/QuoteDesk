@@ -163,6 +163,7 @@ export async function updateSettingsAction(formData: FormData) {
     where: { id: workspace.id },
     data: {
       marginFloorPct,
+      requireCostForGreen: formData.get("requireCostForGreen") != null,
       capabilityEnvelope: JSON.stringify(envelope),
     },
   });
@@ -182,6 +183,7 @@ export async function completeOnboardingAction(formData: FormData) {
     where: { id: workspace.id },
     data: {
       marginFloorPct,
+      requireCostForGreen: formData.get("requireCostForGreen") != null,
       capabilityEnvelope: JSON.stringify({
         materials:
           materials.length > 0

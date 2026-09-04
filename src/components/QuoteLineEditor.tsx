@@ -34,6 +34,7 @@ type Line = {
     fitR2: number | null;
   } | null;
   qtyBreakPricing?: string;
+  marginPct?: number | null;
 };
 
 type BreakPricing = {
@@ -140,6 +141,19 @@ export function QuoteLineEditor({ line }: { line: Line }) {
             ` · slope ${line.priceBasis.fitSlope.toFixed(3)}, r² ${(line.priceBasis.fitR2 ?? 0).toFixed(2)}`}
         </p>
       )}
+
+      <p className="mb-2 text-xs text-[var(--ink-muted)]">
+        Margin:{" "}
+        {line.marginPct != null ? (
+          <span className="font-medium text-[var(--ink)]">
+            {(line.marginPct * 100).toFixed(1)}%
+          </span>
+        ) : (
+          <span className="font-medium text-[var(--amber)]">
+            unknown — no cost record resolves for this item
+          </span>
+        )}
+      </p>
 
       {breaks.length > 0 && (
         <div className="mb-2 rounded border border-[var(--line)] bg-[var(--bg-elevated)] px-3 py-2">
