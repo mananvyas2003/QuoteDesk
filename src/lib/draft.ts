@@ -75,6 +75,7 @@ export async function draftQuoteForRfq(rfqId: string) {
       description: line.rawText,
     });
     const qtyBreaks = parseJson<number[]>(line.qtyBreaks, []);
+    const extractionBlockers = parseJson<Blocker[]>(line.extractionBlockers, []);
     const resolved = await resolveAgainstHistory(rfq.workspaceId, fields, rfq.accountId);
     const envelopeCheck = violatesEnvelope(fields, envelope);
 
@@ -91,7 +92,7 @@ export async function draftQuoteForRfq(rfqId: string) {
         asOfDate: priced.asOfDate,
         inputQuality: line.extractConf,
         envelope: envelopeCheck,
-        extraBlockers: [...resolved.blockers, ...priced.blockers],
+        extraBlockers: [...extractionBlockers, ...resolved.blockers, ...priced.blockers],
       });
       return { priced, ...evaluated };
     };

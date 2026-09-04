@@ -72,6 +72,7 @@ export async function ingestRfq(input: {
           extractedFields: JSON.stringify(l.extractedFields),
           sourcePtr: JSON.stringify(l.sourcePtr),
           extractConf: l.extractConf,
+          extractionBlockers: JSON.stringify(l.blockers),
         })),
       },
     },

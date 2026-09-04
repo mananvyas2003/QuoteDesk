@@ -132,6 +132,8 @@ model RfqLine {
   /// JSON { file, page, bbox?: [x,y,w,h], snippet }
   sourcePtr    String  @default("{}")
   extractConf  Float   @default(0.5)
+  /// JSON array of Blocker raised at extraction time, e.g. contradictory quantities
+  extractionBlockers String @default("[]")
 
   rfq           Rfq            @relation(fields: [rfqId], references: [id], onDelete: Cascade)
   resolvedItem  ResolvedItem?

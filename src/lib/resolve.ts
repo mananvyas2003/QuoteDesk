@@ -59,18 +59,91 @@ export function specHash(fields: ExtractedFields): string {
     .toLowerCase();
 }
 
+export type ResolveOptions = {
+  caps?: {
+    accountScanCap?: number;
+    workspaceScanCap?: number;
+    scoredPoolCap?: number;
+  };
+};
+
+/**
+ * Retrieve and rank comparables for one RFQ line.
+ *
+ * Previously this ran a single `findMany` with `take: 500` and no `orderBy`,
+ * so any corpus above 500 rows was silently truncated to an arbitrary slice —
+ * failing exactly at the scale PRD §7 requires (300+ lines to onboard; real
+ * shops have thousands) and never visibly. It also filtered to `accountId`
+ * whenever an account matched, so every new account had an empty pool and went
+ * 100% RED with no fallback.
+ *
+ * Now: an exact part-number query and the account's own history are fetched
+ * first, then workspace-wide history is fetched ordered by recency. Scan caps
+ * are explicit, and hitting one is surfaced as a blocker rather than vanishing.
+ * Candidates are capped only after scoring.
+ */
 export async function resolveAgainstHistory(
   workspaceId: string,
   fields: ExtractedFields,
   accountId?: string | null,
+  opts?: ResolveOptions,
 ): Promise<ResolveResult> {
-  const history = await prisma.historicalQuoteLine.findMany({
-    where: { historicalQuote: { workspaceId, ...(accountId ? { accountId } : {}) } },
+  const accountScanCap = opts?.caps?.accountScanCap ?? PRICING_CONFIG.retrieval.accountScanCap;
+  const workspaceScanCap =
+    opts?.caps?.workspaceScanCap ?? PRICING_CONFIG.retrieval.workspaceScanCap;
+  const scoredPoolCap = opts?.caps?.scoredPoolCap ?? PRICING_CONFIG.retrieval.scoredPoolCap;
+
+  const blockers: Blocker[] = [];
+  const select = {
     include: { historicalQuote: true },
-    take: 500,
+    orderBy: { historicalQuote: { quotedAt: "desc" as const } },
+  };
+
+  // 1. Exact part-number match, so a strong match is never lost to a scan cap.
+  //    SQLite string comparison is case-sensitive, hence the case variants.
+  const pn = fields.partNumber;
+  const partRows = pn
+    ? await prisma.historicalQuoteLine.findMany({
+        where: {
+          historicalQuote: { workspaceId },
+          partNumber: { in: [pn, pn.toUpperCase(), pn.toLowerCase()] },
+        },
+        ...select,
+        take: scoredPoolCap * 4,
+      })
+    : [];
+
+  // 2. The account's own history.
+  const accountRows = accountId
+    ? await prisma.historicalQuoteLine.findMany({
+        where: { historicalQuote: { workspaceId, accountId } },
+        ...select,
+        take: accountScanCap,
+      })
+    : [];
+
+  // 3. Widen to workspace-wide history. An empty account history must never
+  //    mean an empty pool.
+  const workspaceRows = await prisma.historicalQuoteLine.findMany({
+    where: { historicalQuote: { workspaceId } },
+    ...select,
+    take: workspaceScanCap,
   });
 
-  const toComparable = (h: (typeof history)[number]): Comparable => ({
+  if (accountRows.length >= accountScanCap || workspaceRows.length >= workspaceScanCap) {
+    blockers.push({
+      code: BLOCKER_CODES.candidatePoolTruncated,
+      kind: "assumable",
+      detail: `the comparable search was capped at the ${Math.min(accountScanCap, workspaceScanCap).toLocaleString()} most recent lines, so older comparables were not considered`,
+    });
+  }
+
+  const accountLineIds = new Set(accountRows.map((r) => r.id));
+  const byId = new Map<string, (typeof workspaceRows)[number]>();
+  for (const r of [...partRows, ...accountRows, ...workspaceRows]) byId.set(r.id, r);
+  const history = [...byId.values()];
+
+  const toComparable = (h: (typeof workspaceRows)[number]): Comparable => ({
     id: h.id,
     description: h.description,
     partNumber: h.partNumber,
@@ -78,19 +151,33 @@ export async function resolveAgainstHistory(
     qty: h.qty,
     unitPrice: h.unitPrice,
     quotedAt: h.historicalQuote.quotedAt,
-    scope: accountId ? "account" : "workspace",
+    scope: accountId && accountLineIds.has(h.id) ? "account" : "workspace",
     outcome: null,
     competitorPrice: null,
     costIndex: null,
   });
 
-  // "same as PO/quote X"
+  /** Pricing a new account off another customer's history is an assumption. */
+  const noteScope = (candidates: Comparable[]) => {
+    if (accountId && candidates.length && candidates.every((c) => c.scope === "workspace")) {
+      blockers.push({
+        code: BLOCKER_CODES.noAccountHistory,
+        kind: "assumable",
+        detail:
+          "this account has no priced history for this item; pricing is drawn from workspace-wide history rather than this customer's own prices",
+      });
+    }
+    return candidates;
+  };
+
+  // "same as PO/quote X" — a reference to a prior *quote*, matched on quote
+  // number only. Matching on partNumber here misrouted every plain exact
+  // part-number hit through this branch, stamping it historical_ref at score
+  // 0.90 — below the 0.92 exact threshold — so the exact tier was unreachable.
   const refMatch = fields.partNumber || fields.description?.match(/same as\s+(\S+)/i)?.[1];
   if (refMatch) {
     const byQuote = history.filter(
-      (h) =>
-        h.historicalQuote.quoteNumber?.toLowerCase() === refMatch.toLowerCase() ||
-        h.partNumber?.toLowerCase() === refMatch.toLowerCase(),
+      (h) => h.historicalQuote.quoteNumber?.toLowerCase() === refMatch.toLowerCase(),
     );
     if (byQuote.length) {
       return {
@@ -98,8 +185,8 @@ export async function resolveAgainstHistory(
         specHash: byQuote[0].specHash ?? specHash(fields),
         matchType: "historical_ref",
         matchScore: 0.9,
-        candidates: byQuote.map(toComparable),
-        blockers: [],
+        candidates: noteScope(byQuote.map(toComparable)),
+        blockers,
       };
     }
   }
@@ -126,7 +213,11 @@ export async function resolveAgainstHistory(
       return { h, score };
     })
     .filter((x) => x.score >= CONFIDENCE_THRESHOLDS.weakMatchScore)
-    .sort((a, b) => b.score - a.score);
+    .sort(
+      (a, b) =>
+        b.score - a.score ||
+        b.h.historicalQuote.quotedAt.getTime() - a.h.historicalQuote.quotedAt.getTime(),
+    );
 
   if (!scored.length) {
     return {
@@ -135,7 +226,7 @@ export async function resolveAgainstHistory(
       matchType: "none",
       matchScore: 0,
       candidates: [],
-      blockers: [],
+      blockers,
     };
   }
 
@@ -145,8 +236,8 @@ export async function resolveAgainstHistory(
     specHash: best.h.specHash ?? specHash(fields),
     matchType: classifyMatch(best.score),
     matchScore: best.score,
-    candidates: scored.slice(0, PRICING_CONFIG.retrieval.scoredPoolCap).map(({ h }) => toComparable(h)),
-    blockers: [],
+    candidates: noteScope(scored.slice(0, scoredPoolCap).map(({ h }) => toComparable(h))),
+    blockers,
   };
 }
 

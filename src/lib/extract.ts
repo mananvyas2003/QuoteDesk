@@ -8,7 +8,13 @@ import {
   type HeaderSpecs,
   type SpecHit,
 } from "./specs";
-import type { ExtractedFieldName, ExtractedFields, SourcePointer } from "./types";
+import {
+  BLOCKER_CODES,
+  type Blocker,
+  type ExtractedFieldName,
+  type ExtractedFields,
+  type SourcePointer,
+} from "./types";
 
 export type ParsedRfqLine = {
   lineNumber: number;
@@ -18,6 +24,8 @@ export type ParsedRfqLine = {
   extractedFields: ExtractedFields;
   sourcePtr: SourcePointer;
   extractConf: number;
+  /** Raised at extraction time — e.g. contradictory quantities. */
+  blockers: Blocker[];
 };
 
 export type ParsedRfq = {
@@ -50,14 +58,43 @@ export function parseRfqInput(input: {
   const accountHint = extractAccountHint(body, input.fromEmail);
   const header = extractHeaderSpecs(body);
 
+  // PRD §5.1: reconcile a line table against a differing statement elsewhere in
+  // the body and *surface* the conflict rather than silently picking one.
+  // Previously the prose extractor only ran when the table extractor returned
+  // nothing, so a "same as PO 4471 but 400 units" note sitting alongside a line
+  // table was flagged as a conflict and then never resolved.
   const tableLines = extractTableLines(body, fileName, header);
-  const proseLines = tableLines.length ? [] : extractProseLines(body, fileName, header);
+  const proseLines = extractProseLines(body, fileName, header, {
+    allowCatchAll: tableLines.length === 0,
+  });
+  const lines = mergeLines(tableLines, proseLines);
 
-  // Conflict: body qty vs "same as PO" style note
-  const sameAs = body.match(/same as\s+(?:PO|quote|Q)\s*#?\s*([A-Za-z0-9-]+)/i);
-  if (sameAs && (tableLines.length || proseLines.length)) {
+  const sameAs = body.match(/same as\s+((?:PO|quote|Q)\s*#?\s*[A-Za-z0-9-]+)/i);
+  if (sameAs && tableLines.length && proseLines.length) {
+    const ref = normalizeRef(sameAs[1]);
     conflicts.push(
-      `Body references prior order/quote ${sameAs[1]}; confirm line table matches that job.`,
+      `Body references prior order/quote ${ref} with a different quantity than the line table; confirm which applies.`,
+    );
+    const blocker: Blocker = {
+      code: BLOCKER_CODES.qtyConflict,
+      kind: "unassumable",
+      detail: `the body references ${ref} with a different quantity than the line table; we cannot tell which quantity applies`,
+    };
+    for (const line of lines) {
+      const isSameAsLine = line.extractedFields.partNumber === ref;
+      const refersToSameItem =
+        line.extractedFields.partNumber != null &&
+        line.extractedFields.partNumber.toLowerCase() === ref.toLowerCase();
+      // When the table holds exactly one line, the reference is unambiguously
+      // about it, so the contradiction lands there too.
+      const soleTableLine = tableLines.length === 1 && tableLines.includes(line);
+      if (isSameAsLine || refersToSameItem || soleTableLine) {
+        line.blockers.push(blocker);
+      }
+    }
+  } else if (sameAs && lines.length) {
+    conflicts.push(
+      `Body references prior order/quote ${normalizeRef(sameAs[1])}; confirm line table matches that job.`,
     );
   }
 
@@ -68,9 +105,31 @@ export function parseRfqInput(input: {
     accountHint,
     deadline,
     body,
-    lines: tableLines.length ? tableLines : proseLines,
+    lines,
     conflicts,
   };
+}
+
+/**
+ * Both extractors run; this merges them without double-counting a row the
+ * table extractor already produced, and renumbers the result.
+ */
+function mergeLines(table: ParsedRfqLine[], prose: ParsedRfqLine[]): ParsedRfqLine[] {
+  const kept = [...table];
+  for (const p of prose) {
+    const duplicate = table.some((t) => {
+      if (t.rawText.includes(p.rawText) || p.rawText.includes(t.rawText)) return true;
+      const td = normalizeText(t.extractedFields.description ?? "");
+      const pd = normalizeText(p.extractedFields.description ?? "");
+      return t.qty === p.qty && td.length > 0 && (td.includes(pd) || pd.includes(td));
+    });
+    if (!duplicate) kept.push(p);
+  }
+  return kept.map((l, i) => ({ ...l, lineNumber: i + 1 }));
+}
+
+function normalizeText(s: string): string {
+  return s.toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
 }
 
 function extractDeadline(body: string): Date | undefined {
@@ -191,6 +250,7 @@ function extractProseLines(
   body: string,
   fileName: string,
   header: HeaderSpecs,
+  opts: { allowCatchAll: boolean },
 ): ParsedRfqLine[] {
   const lines: ParsedRfqLine[] = [];
   const rows = body.split(/\r?\n/);
@@ -263,7 +323,7 @@ function extractProseLines(
     );
   }
 
-  if (lines.length === 0 && body.length > 20) {
+  if (opts.allowCatchAll && lines.length === 0 && body.length > 20) {
     lines.push(
       makeLine({
         lineNumber: 1,
@@ -354,6 +414,7 @@ function makeLine(args: {
     extractedFields: fields,
     sourcePtr: pointer({ file: args.fileName, line: args.sourceLine, snippet: args.snippet }),
     extractConf: args.conf,
+    blockers: [],
   };
 }
 
