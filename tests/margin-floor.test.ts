@@ -154,3 +154,45 @@ test("requireCostForGreen is on by default and can be turned off explicitly", as
   const line = await draft(ctx.allowUnknown, "NOCOST-1", "Uncosted bracket");
   assert.equal(line.confidenceState, "GREEN");
 });
+
+test("a quantity break that cannot be priced drags the line down and says why", async () => {
+  const { ingestRfq } = await import("../src/lib/ingest");
+  // Comparables span qty 25–200; 50,000 is ~250x outside that range.
+  const { quote } = await ingestRfq({
+    workspaceId: ctx.requireCost,
+    subject: "RFQ FAT-1 breaks",
+    fromEmail: "buyer@marginco.example",
+    body: `Finish: powder coat black
+Tolerance: ±1/16
+Rev C
+
+Part | Description | Qty | Material
+FAT-1 | Fat margin bracket | 100/500/50000 | A36
+`,
+    fileName: "rfq.txt",
+  });
+
+  assert.equal(quote.lines.length, 1);
+  const line = quote.lines[0];
+  const breaks = JSON.parse(line.qtyBreakPricing) as Array<{
+    qty: number;
+    unitPrice: number | null;
+    confidenceState: string;
+  }>;
+
+  assert.deepEqual(
+    breaks.map((b) => b.qty),
+    [500, 50000],
+    "each requested break is priced independently; 100 is the line's own quantity",
+  );
+  assert.ok(breaks.find((b) => b.qty === 500)?.unitPrice != null, "500 is inside range and prices");
+  assert.equal(breaks.find((b) => b.qty === 50000)?.confidenceState, "RED");
+  assert.equal(breaks.find((b) => b.qty === 50000)?.unitPrice, null);
+
+  // The line takes the worst state of its breaks...
+  assert.equal(line.confidenceState, "RED");
+  // ...and the clarification must name the quantity that caused it, not a
+  // reason derived only from the line's own quantity.
+  assert.ok(line.clarification, "a RED line must generate a clarification");
+  assert.match(line.clarification!, /50,?000/);
+});

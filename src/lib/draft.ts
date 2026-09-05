@@ -120,21 +120,33 @@ export async function draftQuoteForRfq(rfqId: string) {
 
     // Each requested break is priced independently through the same path; the
     // line takes the worst state of all of them (PRD §5.2 quantity breaks).
-    const breaks: BreakPricing[] = qtyBreaks
+    const evaluatedBreaks = qtyBreaks
       .filter((q) => q !== line.qty)
-      .map((q) => {
-        const r = at(q);
-        return {
-          qty: q,
-          unitPrice: r.state === "RED" ? null : r.priced.unitPrice,
-          method: r.priced.method,
-          confidenceState: r.state,
-          blockerCodes: r.blockers.map((b) => b.code),
-        };
-      });
+      .map((q) => ({ qty: q, ...at(q) }));
+
+    const breaks: BreakPricing[] = evaluatedBreaks.map((r) => ({
+      qty: r.qty,
+      unitPrice: r.state === "RED" ? null : r.priced.unitPrice,
+      method: r.priced.method,
+      confidenceState: r.state,
+      blockerCodes: r.blockers.map((b) => b.code),
+    }));
 
     let confidence = breaks.reduce((s, b) => worst(s, b.confidenceState), primary.state);
-    let blockers: Blocker[] = primary.blockers;
+
+    // When a break is what dragged the line down, the reason has to travel with
+    // it — otherwise the line is RED with a clarification that never mentions
+    // the quantity that caused it.
+    let blockers: Blocker[] = [
+      ...primary.blockers,
+      ...evaluatedBreaks
+        .filter((r) => STATE_RANK[r.state] > STATE_RANK[primary.state])
+        .flatMap((r) =>
+          r.blockers
+            .filter((b) => !primary.blockers.some((p) => p.code === b.code))
+            .map((b) => ({ ...b, detail: `at quantity ${r.qty.toLocaleString()}, ${b.detail}` })),
+        ),
+    ];
     const priced: PricedResult = primary.priced;
 
     const resolvedItem = await prisma.resolvedItem.create({
