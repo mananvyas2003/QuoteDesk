@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { IBM_Plex_Sans, IBM_Plex_Serif } from "next/font/google";
 import Link from "next/link";
+import { prisma } from "@/lib/db";
 import "./globals.css";
 
 const plexSans = IBM_Plex_Sans({
@@ -20,13 +21,40 @@ export const metadata: Metadata = {
   description: "AI estimator for metal fabrication: ingest, draft, approve, learn.",
 };
 
-export default function RootLayout({ children }: LayoutProps<"/">) {
+/**
+ * A synthetic corpus that renders exactly like a real one is how a made-up
+ * number ends up in a pitch deck. Every page of a demo workspace says so.
+ */
+async function isDemoWorkspace(): Promise<boolean> {
+  try {
+    const ws = await prisma.workspace.findFirst({
+      orderBy: { createdAt: "asc" },
+      select: { isDemo: true },
+    });
+    return ws?.isDemo ?? false;
+  } catch {
+    // The banner must never be the reason a page fails to render.
+    return false;
+  }
+}
+
+export default async function RootLayout({ children }: LayoutProps<"/">) {
+  const demo = await isDemoWorkspace();
+
   return (
     <html
       lang="en"
       className={`${plexSans.variable} ${plexSerif.variable} h-full antialiased`}
     >
       <body className="min-h-full flex flex-col">
+        {demo && (
+          <div
+            role="alert"
+            className="sticky top-0 z-50 border-b border-[var(--red)]/40 bg-[var(--red-bg)] px-4 py-2 text-center text-sm font-medium text-[var(--red)]"
+          >
+            Demo corpus — prices are synthetic. Not valid for evaluation.
+          </div>
+        )}
         <header className="border-b border-[var(--line)] bg-[var(--panel)]/90 backdrop-blur-sm">
           <div className="mx-auto flex max-w-6xl items-center justify-between gap-6 px-4 py-3">
             <Link href="/" className="flex items-baseline gap-2">

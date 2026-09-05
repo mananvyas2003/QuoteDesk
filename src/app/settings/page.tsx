@@ -5,7 +5,7 @@ import { updateSettingsAction } from "@/lib/actions";
 export const dynamic = "force-dynamic";
 
 export default async function SettingsPage() {
-  const { workspace } = await getWorkspaceContext();
+  const { workspace } = await getWorkspaceContext({ requireCorpus: false });
   const envelope = JSON.parse(workspace.capabilityEnvelope || "{}") as {
     materials?: string[];
     maxLeadDays?: number;

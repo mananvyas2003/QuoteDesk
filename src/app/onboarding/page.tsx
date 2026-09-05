@@ -6,7 +6,7 @@ import { redirect } from "next/navigation";
 export const dynamic = "force-dynamic";
 
 export default async function OnboardingPage() {
-  const { workspace } = await getWorkspaceContext();
+  const { workspace } = await getWorkspaceContext({ requireCorpus: false });
   const lineCount = await prisma.historicalQuoteLine.count({
     where: { historicalQuote: { workspaceId: workspace.id } },
   });
