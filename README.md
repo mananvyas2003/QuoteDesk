@@ -4,10 +4,17 @@ AI estimator that answers inbound RFQs for metal fabrication shops.
 
 V1 implements the three PRD features: **ingest → draft (GREEN/AMBER/RED) → approve / send / learn**.
 
-> **The pricing accuracy of this system has never been measured.** PRD §2's K3
-> kill criterion (drafted price within ±10% on ≥70% of lines) requires a real
-> shop's quote history. The harness exists — `npm run backtest` — but no real
-> dataset has been run through it. See [reports/k3-backtest.md](reports/k3-backtest.md).
+> K3 (PRD §2) is **unmeasured**. No real shop corpus has been loaded. See
+> [reports/k3-backtest.md](reports/k3-backtest.md).
+
+That is not a formality. PRD §2's K3 kill criterion — drafted price within ±10%
+on ≥70% of lines — requires a real shop's quote history. The harness exists
+(`npm run backtest`), and it refuses to produce a number from synthetic data.
+Until a real corpus runs through it, nothing here establishes that the pricing
+signal is in the history.
+
+**This repo is feature-frozen.** See [FREEZE.md](FREEZE.md) for what that
+allows and the single condition that lifts it.
 
 ## Stack
 
@@ -47,6 +54,10 @@ synthetic. Not valid for evaluation."*, and is refused by the backtest harness.
 
 ## PRD alignment
 
+State of `main` as merged (`cdf2db4`), verified by the run recorded in
+[reports/01-post-merge.md](reports/01-post-merge.md): 51 tests pass, lint clean,
+build clean, 8 migrations with none pending.
+
 Every "Done" links to the test or report that proves it. Nothing is marked Done
 on the strength of the demo rendering.
 
@@ -58,7 +69,7 @@ on the strength of the demo rendering.
 | §5.2 Priced / assumptions / decline / clarify | Done | [green-reachability.test.ts](tests/green-reachability.test.ts) (`an unassumable blocker forces RED and a clarification, never a price`) |
 | §5.2 Quantity-break pricing | Done | [pricing.test.ts](tests/pricing.test.ts); each break priced independently, line takes the worst state |
 | §5.3 Approve, edit capture, outcome | Done — UI + `edit_event` / `outcome` persistence | Not covered by an automated test; verified by hand only |
-| §5.4 Confidence gating, GREEN reachable | Done | [green-reachability.test.ts](tests/green-reachability.test.ts) — permanent regression guard; [reports/00-baseline.md](reports/00-baseline.md) (GREEN 0 → 4 of 18) |
+| §5.4 Confidence gating, GREEN reachable | Done | [green-reachability.test.ts](tests/green-reachability.test.ts) — permanent regression guard; [00-baseline.md](reports/00-baseline.md) → [01-post-merge.md](reports/01-post-merge.md) (GREEN 0 of 17 → 4 of 18, measured on merged `main`) |
 | §5.4 Margin-floor override rule | Done | [margin-floor.test.ts](tests/margin-floor.test.ts) — above floor → GREEN, below → AMBER with the margin stated, no cost record → AMBER |
 | §5.4 Quantity-aware pricing | Done | [pricing.test.ts](tests/pricing.test.ts) — monotonic in quantity; qty 50,000 against a 10–500 corpus returns RED, not a number |
 | §6 Data model | Done, extended | `CostRecord`, `HistoricalQuote.outcome`/`competitorPrice`, `HistoricalQuoteLine.costIndex`/`tolerance`/`revision`, `PriceBasis.method`/qty range/fit diagnostics, `QuoteLine.marginPct` |
@@ -109,7 +120,7 @@ Named explicitly so the demo cannot imply otherwise.
 | Command | What it does |
 |---|---|
 | `npm run dev` | Local app |
-| `npm test` | Full suite (50 tests) |
+| `npm test` | Full suite (51 tests) |
 | `npm run backtest -- --data <path>` | K3 backtest on a real export — see [scripts/BACKTEST.md](scripts/BACKTEST.md) |
 | `npm run confidence:dist` | Confidence-state distribution over 15 hand-written RFQs |
 | `npm run confidence:dist -- --no-costs` | Same, with no cost records — shows what the GREEN cost gate costs |
@@ -121,4 +132,12 @@ Named explicitly so the demo cannot imply otherwise.
 
 - [reports/00-baseline.md](reports/00-baseline.md) — GREEN was unreachable by
   construction (0 of 17 lines), the mechanism, and the post-fix distribution.
+- [reports/01-post-merge.md](reports/01-post-merge.md) — the same instrument run
+  on merged `main` (GREEN 4 of 18), plus the full verification run.
 - [reports/k3-backtest.md](reports/k3-backtest.md) — K3 status: **unmeasured**.
+
+## Freeze
+
+The repo is feature-frozen. [FREEZE.md](FREEZE.md) states what is and is not
+allowed, and the single condition that lifts it: a real shop corpus loaded and a
+measured result in `reports/k3-backtest.md`.
