@@ -71,6 +71,18 @@ export type ResolveOptions = {
     workspaceScanCap?: number;
     scoredPoolCap?: number;
   };
+  /**
+   * Historical lines to hold out. Used by the leave-one-out backtest so it runs
+   * the production retrieval path rather than a parallel implementation.
+   */
+  excludeHistoricalLineIds?: string[];
+  /**
+   * Only consider comparables quoted on or before this date. Production always
+   * leaves this unset (nothing in the corpus is from the future); the backtest
+   * sets it to the held-out line's quote date so a prediction can never use
+   * data that did not exist when the line was quoted.
+   */
+  asOf?: Date;
 };
 
 /**
@@ -100,6 +112,12 @@ export async function resolveAgainstHistory(
   const scoredPoolCap = opts?.caps?.scoredPoolCap ?? PRICING_CONFIG.retrieval.scoredPoolCap;
 
   const blockers: Blocker[] = [];
+  const exclude = opts?.excludeHistoricalLineIds ?? [];
+  const scopeWhere = {
+    workspaceId,
+    ...(opts?.asOf ? { quotedAt: { lte: opts.asOf } } : {}),
+  };
+  const lineWhere = exclude.length ? { id: { notIn: exclude } } : {};
   const select = {
     include: { historicalQuote: true },
     orderBy: { historicalQuote: { quotedAt: "desc" as const } },
@@ -111,7 +129,8 @@ export async function resolveAgainstHistory(
   const partRows = pn
     ? await prisma.historicalQuoteLine.findMany({
         where: {
-          historicalQuote: { workspaceId },
+          ...lineWhere,
+          historicalQuote: scopeWhere,
           partNumber: { in: [pn, pn.toUpperCase(), pn.toLowerCase()] },
         },
         ...select,
@@ -122,7 +141,7 @@ export async function resolveAgainstHistory(
   // 2. The account's own history.
   const accountRows = accountId
     ? await prisma.historicalQuoteLine.findMany({
-        where: { historicalQuote: { workspaceId, accountId } },
+        where: { ...lineWhere, historicalQuote: { ...scopeWhere, accountId } },
         ...select,
         take: accountScanCap,
       })
@@ -131,7 +150,7 @@ export async function resolveAgainstHistory(
   // 3. Widen to workspace-wide history. An empty account history must never
   //    mean an empty pool.
   const workspaceRows = await prisma.historicalQuoteLine.findMany({
-    where: { historicalQuote: { workspaceId } },
+    where: { ...lineWhere, historicalQuote: scopeWhere },
     ...select,
     take: workspaceScanCap,
   });

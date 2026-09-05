@@ -11,7 +11,8 @@
     "db:seed": "tsx prisma/seed.ts",
     "db:studio": "prisma studio",
     "test": "node --import tsx --test \"tests/**/*.test.ts\"",
-    "confidence:dist": "tsx scripts/confidence-distribution.ts"
+    "confidence:dist": "tsx scripts/confidence-distribution.ts",
+    "backtest": "tsx scripts/backtest.ts"
   },
   "dependencies": {
     "@prisma/client": "5.22.0",

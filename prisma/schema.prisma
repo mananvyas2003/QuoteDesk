@@ -20,6 +20,10 @@ model Workspace {
   /// JSON: materials[], maxSizeIn, toleranceClasses[], certifications[], maxLeadDays, minOrderValue
   capabilityEnvelope  String   @default("{}")
   ingestEmail         String?
+  /// True only for the synthetic demo corpus loaded by `npm run db:seed -- --demo`.
+  /// Demo prices are invented; scripts/backtest.ts refuses to run on such a workspace
+  /// and the UI renders a permanent banner.
+  isDemo              Boolean  @default(false)
   onboardedAt         DateTime?
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
@@ -103,6 +107,11 @@ model HistoricalQuoteLine {
   partNumber        String?
   material          String?
   finish            String?
+  /// PRD §5.1 lists tolerance and revision among the fields that must be extracted.
+  /// Without them here, a backtest reconstructing fields from history trips
+  /// missing_revision on every line and GREEN can never be measured.
+  tolerance         String?
+  revision          String?
   qty               Float
   unitPrice         Float
   sku               String?
