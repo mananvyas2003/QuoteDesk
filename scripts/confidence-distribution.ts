@@ -86,7 +86,10 @@ async function main() {
         );
       }
     } else {
-      console.log(`\nCorpus: ${QUOTE_SUMMARY(await corpusStats(db.prisma, workspace.id))}\n`);
+      console.log(
+        `\nCorpus: ${QUOTE_SUMMARY(await corpusStats(db.prisma, workspace.id))}` +
+          (withCostRecords ? ", cost records loaded\n" : ", NO cost records\n"),
+      );
       for (const row of rows) {
         console.log(`${row.rfq}  ${row.shape}`);
         for (const d of row.detail) console.log(`      ${d}`);
