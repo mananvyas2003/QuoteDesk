@@ -97,3 +97,94 @@ Only 17 quote lines were produced from 15 RFQs.
 ## The number every later task is measured against
 
 **GREEN = 0 of 17 lines (0.0%).**
+
+---
+
+# Post-fix distribution (same instrument, same 15 RFQs)
+
+Re-run after Tasks 1–8 with `npx tsx scripts/confidence-distribution.ts --markdown`.
+Same corpus, same inputs, so the two are directly comparable.
+
+Corpus: 28 priced historical lines, 5 distinct items, 2025-12-05 → 2026-08-05, cost records loaded
+
+| State | Lines | % of lines |
+|---|---:|---:|
+| GREEN | 4 | 22.2% |
+| AMBER | 9 | 50.0% |
+| RED | 5 | 27.8% |
+| **Total** | **18** | |
+
+| RFQ | Input shape | Line outcomes |
+|---|---|---|
+| R01 | pipe table, fully specified | AMBER · Base plate 12x18x0.5 · qty 50 · $48.60 |
+| R02 | pipe table, finish not stated | AMBER · Guard bracket laser cut · qty 100 · $12.76 |
+| R03 | qty-first shorthand | GREEN · Guard bracket laser cut · qty 100 · $12.76 |
+| R04 | prose request | AMBER · SS shaft collar 2in for a rebuild. · qty 40 · $23.26 |
+| R05 | same-as prior PO | AMBER · Same as PO-4471 · qty 400 · $21.80 |
+| R06 | scanned drawing, no specs | RED · See attached scan. Hard to read — please · qty 1 · not priced |
+| R07 | quantity breaks | AMBER · Please price AC-33 angle clip 3x3x0.25 a · qty 100 · $4.04 |
+| R08 | table plus contradicting same-as note | AMBER · Weldment frame 24x36 · qty 25 · $367.84<br>RED · Same as PO-4471 · qty 400 · not priced |
+| R09 | new account, no account history | AMBER · Base plate 12x18x0.5 · qty 60 · $47.83 |
+| R10 | quantity far outside history | RED · Angle clip 3x3x0.25 PN AC-33 A36 · qty 50000 · not priced |
+| R11 | capability envelope violation | RED · Housing shell Ti-6Al-4V titanium · qty 20 · not priced |
+| R12 | title-block header applying to table | GREEN · Guard bracket laser cut · qty 200 · $11.51 |
+| R13 | tight tolerance class | AMBER · SS shaft collar 2in PN SC-200 SS304. · qty 80 · $22.28 |
+| R14 | unknown part, no history | RED · Hydraulic manifold block XZ-9931 · qty 10 · not priced |
+| R15 | multi-line mixed table | AMBER · Base plate 12x18x0.5 · qty 40 · $49.55<br>GREEN · Angle clip 3x3x0.25 · qty 500 · $3.17<br>GREEN · Guard bracket laser cut · qty 150 · $12.01 |
+
+## Before → after
+
+| State | Before | After |
+|---|---:|---:|
+| GREEN | 0 (0.0%) | **4 (22.2%)** |
+| AMBER | 9 (52.9%) | 9 (50.0%) |
+| RED | 8 (47.1%) | 5 (27.8%) |
+| Lines extracted | 17 | 18 |
+
+**GREEN is reachable.** The permanent regression guard is
+`tests/green-reachability.test.ts`.
+
+Line count rose from 17 to 18 because R08's "same as PO 4471 but 400 units" note
+is now extracted alongside the line table instead of being discarded, and lands
+RED on an unassumable `qty_conflict` blocker (Task 3d).
+
+### What changed per RFQ, and why
+
+- **R03, R12, R15** now reach GREEN: finish, tolerance and revision are
+  extracted from line text and title-block headers, comparables resolve at the
+  requested quantity, and a cost record puts margin above the floor.
+- **R01, R15/line 1** are AMBER, not GREEN, on `prior_loss_below_price`: the
+  corpus contains a lost BP-1218 quote with a competitor price of $45.00, below
+  the $48.60 derived here (Task 4). This is the intended behaviour.
+- **R05** now prices. `same as PO 4471` normalises to the stored quote number
+  `PO-4471`; previously the extractor dropped the prefix and nothing matched.
+- **R07** prices the requested `100/500/1000` breaks independently rather than
+  collapsing to a single qty-1 line.
+- **R09** (new account) prices from workspace-wide history instead of going RED
+  with an empty pool, and states that as an assumption (Task 3b).
+- **R10** (qty 50,000 against a 100–1,000 corpus) is now RED instead of being
+  priced by averaging across quantities (Task 2).
+- **R06, R11, R14** stay RED, correctly: illegible input, envelope violation,
+  and an unknown part with no history.
+
+### The cost gate, measured
+
+Running the same instrument with `--no-costs` removes every cost record:
+
+| State | With cost records | Without |
+|---|---:|---:|
+| GREEN | 4 (22.2%) | **0 (0.0%)** |
+| AMBER | 9 (50.0%) | 13 (72.2%) |
+| RED | 5 (27.8%) | 5 (27.8%) |
+
+`workspace.requireCostForGreen` defaults to true, so with no resolvable cost the
+margin is unverifiable and no line may be GREEN (Task 6). Reproduce with
+`npm run confidence:dist -- --no-costs`.
+
+## What these numbers are still not
+
+A 22.2% GREEN rate here says the gate *can* reach GREEN on a corpus built to
+allow it. It says nothing about whether any of those four prices is correct. The
+corpus is invented. Pricing accuracy requires `scripts/backtest.ts` on a real
+export — see [reports/k3-backtest.md](k3-backtest.md), where K3 is recorded as
+**unmeasured**.
