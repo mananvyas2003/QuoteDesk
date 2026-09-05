@@ -1,19 +1,42 @@
 import { prisma } from "./db";
-import { CONFIDENCE_THRESHOLDS, type ExtractedFields } from "./types";
+import { monthsBetween } from "./confidence";
+import { PRICING_CONFIG, recencyWeight } from "./pricing";
+import {
+  BLOCKER_CODES,
+  CONFIDENCE_THRESHOLDS,
+  type Blocker,
+  type CandidateScope,
+  type ExtractedFields,
+  type PriceMethod,
+} from "./types";
+
+export type Comparable = {
+  id: string;
+  description: string;
+  partNumber: string | null;
+  sku: string | null;
+  qty: number;
+  unitPrice: number;
+  quotedAt: Date;
+  scope: CandidateScope;
+  outcome: string | null;
+  competitorPrice: number | null;
+  costIndex: number | null;
+};
 
 export type ResolveResult = {
   sku: string | null;
   specHash: string | null;
-  matchType: "exact" | "near" | "historical_ref" | "none";
+  matchType: "exact" | "near" | "weak" | "historical_ref" | "none";
   matchScore: number;
-  candidates: Array<{
-    id: string;
-    description: string;
-    partNumber: string | null;
-    unitPrice: number;
-    quotedAt: Date;
-    sku: string | null;
-  }>;
+  candidates: Comparable[];
+  blockers: Blocker[];
+  /**
+   * The most recent material cost index the shop has supplied anywhere in this
+   * workspace, used as the reference point for back-adjusting older prices.
+   * Null when no index exists — prices are then used unadjusted.
+   */
+  currentCostIndex: number | null;
 };
 
 function normalize(s: string): string {
@@ -42,29 +65,153 @@ export function specHash(fields: ExtractedFields): string {
     .toLowerCase();
 }
 
+export type ResolveOptions = {
+  caps?: {
+    accountScanCap?: number;
+    workspaceScanCap?: number;
+    scoredPoolCap?: number;
+  };
+  /**
+   * Historical lines to hold out. Used by the leave-one-out backtest so it runs
+   * the production retrieval path rather than a parallel implementation.
+   */
+  excludeHistoricalLineIds?: string[];
+  /**
+   * Only consider comparables quoted on or before this date. Production always
+   * leaves this unset (nothing in the corpus is from the future); the backtest
+   * sets it to the held-out line's quote date so a prediction can never use
+   * data that did not exist when the line was quoted.
+   */
+  asOf?: Date;
+};
+
+/**
+ * Retrieve and rank comparables for one RFQ line.
+ *
+ * Previously this ran a single `findMany` with `take: 500` and no `orderBy`,
+ * so any corpus above 500 rows was silently truncated to an arbitrary slice —
+ * failing exactly at the scale PRD §7 requires (300+ lines to onboard; real
+ * shops have thousands) and never visibly. It also filtered to `accountId`
+ * whenever an account matched, so every new account had an empty pool and went
+ * 100% RED with no fallback.
+ *
+ * Now: an exact part-number query and the account's own history are fetched
+ * first, then workspace-wide history is fetched ordered by recency. Scan caps
+ * are explicit, and hitting one is surfaced as a blocker rather than vanishing.
+ * Candidates are capped only after scoring.
+ */
 export async function resolveAgainstHistory(
   workspaceId: string,
   fields: ExtractedFields,
   accountId?: string | null,
+  opts?: ResolveOptions,
 ): Promise<ResolveResult> {
-  const history = await prisma.historicalQuoteLine.findMany({
-    where: {
-      historicalQuote: {
-        workspaceId,
-        ...(accountId ? { accountId } : {}),
-      },
-    },
+  const accountScanCap = opts?.caps?.accountScanCap ?? PRICING_CONFIG.retrieval.accountScanCap;
+  const workspaceScanCap =
+    opts?.caps?.workspaceScanCap ?? PRICING_CONFIG.retrieval.workspaceScanCap;
+  const scoredPoolCap = opts?.caps?.scoredPoolCap ?? PRICING_CONFIG.retrieval.scoredPoolCap;
+
+  const blockers: Blocker[] = [];
+  const exclude = opts?.excludeHistoricalLineIds ?? [];
+  const scopeWhere = {
+    workspaceId,
+    ...(opts?.asOf ? { quotedAt: { lte: opts.asOf } } : {}),
+  };
+  const lineWhere = exclude.length ? { id: { notIn: exclude } } : {};
+  const select = {
     include: { historicalQuote: true },
-    take: 500,
+    orderBy: { historicalQuote: { quotedAt: "desc" as const } },
+  };
+
+  // 1. Exact part-number match, so a strong match is never lost to a scan cap.
+  //    SQLite string comparison is case-sensitive, hence the case variants.
+  const pn = fields.partNumber;
+  const partRows = pn
+    ? await prisma.historicalQuoteLine.findMany({
+        where: {
+          ...lineWhere,
+          historicalQuote: scopeWhere,
+          partNumber: { in: [pn, pn.toUpperCase(), pn.toLowerCase()] },
+        },
+        ...select,
+        take: scoredPoolCap * 4,
+      })
+    : [];
+
+  // 2. The account's own history.
+  const accountRows = accountId
+    ? await prisma.historicalQuoteLine.findMany({
+        where: { ...lineWhere, historicalQuote: { ...scopeWhere, accountId } },
+        ...select,
+        take: accountScanCap,
+      })
+    : [];
+
+  // 3. Widen to workspace-wide history. An empty account history must never
+  //    mean an empty pool.
+  const workspaceRows = await prisma.historicalQuoteLine.findMany({
+    where: { ...lineWhere, historicalQuote: scopeWhere },
+    ...select,
+    take: workspaceScanCap,
   });
 
-  // "same as PO/quote X"
+  if (accountRows.length >= accountScanCap || workspaceRows.length >= workspaceScanCap) {
+    blockers.push({
+      code: BLOCKER_CODES.candidatePoolTruncated,
+      kind: "assumable",
+      detail: `the comparable search was capped at the ${Math.min(accountScanCap, workspaceScanCap).toLocaleString()} most recent lines, so older comparables were not considered`,
+    });
+  }
+
+  const accountLineIds = new Set(accountRows.map((r) => r.id));
+  const byId = new Map<string, (typeof workspaceRows)[number]>();
+  for (const r of [...partRows, ...accountRows, ...workspaceRows]) byId.set(r.id, r);
+  const history = [...byId.values()];
+
+  // Reference index = the newest index the shop has actually supplied. Never
+  // synthesised: when no line carries one, this stays null and no price is
+  // adjusted.
+  const currentCostIndex =
+    [...history]
+      .filter((h) => h.costIndex != null)
+      .sort((a, b) => b.historicalQuote.quotedAt.getTime() - a.historicalQuote.quotedAt.getTime())[0]
+      ?.costIndex ?? null;
+
+  const toComparable = (h: (typeof workspaceRows)[number]): Comparable => ({
+    id: h.id,
+    description: h.description,
+    partNumber: h.partNumber,
+    sku: h.sku,
+    qty: h.qty,
+    unitPrice: h.unitPrice,
+    quotedAt: h.historicalQuote.quotedAt,
+    scope: accountId && accountLineIds.has(h.id) ? "account" : "workspace",
+    outcome: h.historicalQuote.outcome,
+    competitorPrice: h.historicalQuote.competitorPrice,
+    costIndex: h.costIndex,
+  });
+
+  /** Pricing a new account off another customer's history is an assumption. */
+  const noteScope = (candidates: Comparable[]) => {
+    if (accountId && candidates.length && candidates.every((c) => c.scope === "workspace")) {
+      blockers.push({
+        code: BLOCKER_CODES.noAccountHistory,
+        kind: "assumable",
+        detail:
+          "this account has no priced history for this item; pricing is drawn from workspace-wide history rather than this customer's own prices",
+      });
+    }
+    return candidates;
+  };
+
+  // "same as PO/quote X" — a reference to a prior *quote*, matched on quote
+  // number only. Matching on partNumber here misrouted every plain exact
+  // part-number hit through this branch, stamping it historical_ref at score
+  // 0.90 — below the 0.92 exact threshold — so the exact tier was unreachable.
   const refMatch = fields.partNumber || fields.description?.match(/same as\s+(\S+)/i)?.[1];
   if (refMatch) {
     const byQuote = history.filter(
-      (h) =>
-        h.historicalQuote.quoteNumber?.toLowerCase() === refMatch.toLowerCase() ||
-        h.partNumber?.toLowerCase() === refMatch.toLowerCase(),
+      (h) => h.historicalQuote.quoteNumber?.toLowerCase() === refMatch.toLowerCase(),
     );
     if (byQuote.length) {
       return {
@@ -72,14 +219,9 @@ export async function resolveAgainstHistory(
         specHash: byQuote[0].specHash ?? specHash(fields),
         matchType: "historical_ref",
         matchScore: 0.9,
-        candidates: byQuote.map((h) => ({
-          id: h.id,
-          description: h.description,
-          partNumber: h.partNumber,
-          unitPrice: h.unitPrice,
-          quotedAt: h.historicalQuote.quotedAt,
-          sku: h.sku,
-        })),
+        candidates: noteScope(byQuote.map(toComparable)),
+        blockers,
+        currentCostIndex,
       };
     }
   }
@@ -105,8 +247,12 @@ export async function resolveAgainstHistory(
       }
       return { h, score };
     })
-    .filter((x) => x.score >= 0.35)
-    .sort((a, b) => b.score - a.score);
+    .filter((x) => x.score >= CONFIDENCE_THRESHOLDS.weakMatchScore)
+    .sort(
+      (a, b) =>
+        b.score - a.score ||
+        b.h.historicalQuote.quotedAt.getTime() - a.h.historicalQuote.quotedAt.getTime(),
+    );
 
   if (!scored.length) {
     return {
@@ -115,73 +261,341 @@ export async function resolveAgainstHistory(
       matchType: "none",
       matchScore: 0,
       candidates: [],
+      blockers,
+      currentCostIndex,
     };
   }
 
   const best = scored[0];
-  const matchType =
-    best.score >= CONFIDENCE_THRESHOLDS.exactMatchScore
-      ? "exact"
-      : best.score >= CONFIDENCE_THRESHOLDS.nearMatchScore
-        ? "near"
-        : "near";
-
   return {
     sku: best.h.sku,
     specHash: best.h.specHash ?? specHash(fields),
-    matchType: best.score < CONFIDENCE_THRESHOLDS.nearMatchScore ? "near" : matchType,
+    matchType: classifyMatch(best.score),
     matchScore: best.score,
-    candidates: scored.slice(0, 12).map(({ h }) => ({
-      id: h.id,
-      description: h.description,
-      partNumber: h.partNumber,
-      unitPrice: h.unitPrice,
-      quotedAt: h.historicalQuote.quotedAt,
-      sku: h.sku,
-    })),
+    candidates: noteScope(scored.slice(0, scoredPoolCap).map(({ h }) => toComparable(h))),
+    blockers,
+    currentCostIndex,
   };
 }
 
-export function priceFromCandidates(candidates: ResolveResult["candidates"]): {
+/**
+ * The one place the exact / near / weak boundary is decided. The previous
+ * ternary assigned "near" in both branches and was then overwritten by a second
+ * comparison, so the exact tier was dead code.
+ */
+export function classifyMatch(score: number): "exact" | "near" | "weak" | "none" {
+  if (score >= CONFIDENCE_THRESHOLDS.exactMatchScore) return "exact";
+  if (score >= CONFIDENCE_THRESHOLDS.nearMatchScore) return "near";
+  if (score >= CONFIDENCE_THRESHOLDS.weakMatchScore) return "weak";
+  return "none";
+}
+
+export type PricedResult = {
   unitPrice: number | null;
+  method: PriceMethod;
   asOfDate: Date | null;
   comparableCount: number;
   variance: number | null;
   sourceId: string | null;
   citationLabel: string | null;
-} {
-  const cutoff = new Date();
+  qtyRequested: number;
+  qtyRangeMin: number | null;
+  qtyRangeMax: number | null;
+  fitSlope: number | null;
+  fitR2: number | null;
+  blockers: Blocker[];
+};
+
+type Weighted = { c: Comparable; weight: number; price: number };
+
+/**
+ * Derive a unit price for a *specific requested quantity*.
+ *
+ * In fabrication, unit price versus quantity is the dominant curve because
+ * setup cost amortises. The previous implementation returned the arithmetic
+ * mean of comparable unit prices with no quantity normalisation, so a price at
+ * qty 10 averaged with one at qty 1000 was wrong for both. That path is gone:
+ * unit prices are never averaged across different quantities.
+ */
+export function priceFromCandidates(
+  candidates: Comparable[],
+  qtyRequested: number,
+  opts?: { now?: Date; currentCostIndex?: number | null },
+): PricedResult {
+  const now = opts?.now ?? new Date();
+  const blockers: Blocker[] = [];
+
+  const cutoff = new Date(now);
   cutoff.setMonth(cutoff.getMonth() - CONFIDENCE_THRESHOLDS.maxAgeMonths);
   const recent = candidates.filter((c) => c.quotedAt >= cutoff);
   const pool = recent.length ? recent : candidates;
+
+  const empty: PricedResult = {
+    unitPrice: null,
+    method: "none",
+    asOfDate: null,
+    comparableCount: 0,
+    variance: null,
+    sourceId: null,
+    citationLabel: null,
+    qtyRequested,
+    qtyRangeMin: null,
+    qtyRangeMax: null,
+    fitSlope: null,
+    fitR2: null,
+    blockers,
+  };
+
   if (!pool.length) {
+    blockers.push({
+      code: BLOCKER_CODES.noPriceBasis,
+      kind: "unassumable",
+      detail: "no priced comparable is available as a price basis",
+    });
+    return empty;
+  }
+
+  const qtyRangeMin = Math.min(...pool.map((c) => c.qty));
+  const qtyRangeMax = Math.max(...pool.map((c) => c.qty));
+
+  // How far outside the observed quantity range is the request?
+  const outsideRatio =
+    qtyRequested > qtyRangeMax
+      ? qtyRequested / qtyRangeMax
+      : qtyRequested < qtyRangeMin
+        ? qtyRangeMin / qtyRequested
+        : 1;
+
+  if (outsideRatio > PRICING_CONFIG.qty.extrapolationRedRatio) {
+    blockers.push({
+      code: BLOCKER_CODES.unsupportableQuantity,
+      kind: "unassumable",
+      detail: `quantity ${fmtQty(qtyRequested)} is ${outsideRatio.toFixed(0)}× outside the ${fmtQty(qtyRangeMin)}–${fmtQty(qtyRangeMax)} range we have priced; we will not extrapolate a setup-cost curve that far`,
+    });
+    return { ...empty, comparableCount: pool.length, qtyRangeMin, qtyRangeMax };
+  }
+  if (outsideRatio > PRICING_CONFIG.qty.extrapolationAmberRatio) {
+    blockers.push({
+      code: BLOCKER_CODES.qtyExtrapolated,
+      kind: "assumable",
+      detail: `quantity ${fmtQty(qtyRequested)} is ${outsideRatio.toFixed(1)}× outside the ${fmtQty(qtyRangeMin)}–${fmtQty(qtyRangeMax)} range of our comparables; the unit price is extrapolated`,
+    });
+  }
+
+  const weighted: Weighted[] = pool.map((c) => ({
+    c,
+    weight: comparableWeight(c, now),
+    price: adjustedPrice(c, opts?.currentCostIndex ?? null),
+  }));
+
+  const base = { qtyRequested, qtyRangeMin, qtyRangeMax, blockers };
+
+  /**
+   * A lost quote with a known competitor price is a censored upper bound: we
+   * know the job went below that number. Deriving a price above it is not
+   * wrong, but it is a judgement the estimator must see.
+   */
+  const noteCompetitorBound = (price: number) => {
+    const bound = pool
+      .filter((c) => c.outcome === "lost" && c.competitorPrice != null)
+      .reduce<number | null>(
+        (lo, c) => (lo == null || c.competitorPrice! < lo ? c.competitorPrice! : lo),
+        null,
+      );
+    if (bound != null && price > bound) {
+      blockers.push({
+        code: BLOCKER_CODES.priorLossBelowPrice,
+        kind: "assumable",
+        detail: `we previously lost this item family at a competitor price of $${bound.toFixed(2)}, below the $${price.toFixed(2)} derived here`,
+      });
+    }
+    return price;
+  };
+
+  // 3. Single comparable.
+  if (weighted.length === 1) {
+    const only = weighted[0];
+    blockers.push({
+      code: BLOCKER_CODES.singleComparable,
+      kind: "assumable",
+      detail: `pricing is based on a single comparable at quantity ${fmtQty(only.c.qty)}`,
+    });
     return {
-      unitPrice: null,
-      asOfDate: null,
-      comparableCount: 0,
+      ...base,
+      unitPrice: round(noteCompetitorBound(only.price)),
+      method: "single_comparable",
+      asOfDate: only.c.quotedAt,
+      comparableCount: 1,
       variance: null,
-      sourceId: null,
-      citationLabel: null,
+      sourceId: only.c.id,
+      citationLabel: citation(only.c),
+      fitSlope: null,
+      fitR2: null,
     };
   }
 
-  const prices = pool.map((c) => c.unitPrice);
-  const mean = prices.reduce((a, b) => a + b, 0) / prices.length;
-  const variance =
-    prices.length > 1
-      ? Math.sqrt(
-          prices.reduce((a, p) => a + (p - mean) ** 2, 0) / prices.length,
-        ) / mean
-      : 0;
+  // 1. Log-log fit, when there is enough quantity spread to see a curve.
+  const distinctQty = new Set(pool.map((c) => c.qty));
+  const spread = qtyRangeMax / qtyRangeMin;
+  if (
+    weighted.length >= PRICING_CONFIG.qty.minComparablesForFit &&
+    distinctQty.size >= 2 &&
+    spread >= PRICING_CONFIG.qty.minQtyRatioForFit
+  ) {
+    const fit = logLogFit(weighted);
+    if (
+      fit &&
+      fit.slope <= PRICING_CONFIG.qty.maxAcceptedSlope &&
+      fit.r2 >= PRICING_CONFIG.qty.minAcceptedR2
+    ) {
+      const price = Math.exp(fit.intercept + fit.slope * Math.log(qtyRequested));
+      const newest = newestOf(pool);
+      return {
+        ...base,
+        unitPrice: round(noteCompetitorBound(price)),
+        method: "loglog_fit",
+        asOfDate: newest.quotedAt,
+        comparableCount: pool.length,
+        variance: fit.residualCv,
+        sourceId: newest.id,
+        citationLabel: citation(newest),
+        fitSlope: fit.slope,
+        fitR2: fit.r2,
+      };
+    }
+  }
 
-  const newest = [...pool].sort((a, b) => b.quotedAt.getTime() - a.quotedAt.getTime())[0];
+  // 2. Nearest quantity. Only comparables at that same quantity contribute, so
+  //    unit prices are never averaged across different quantities.
+  const targetLog = Math.log(qtyRequested);
+  const nearestQty = weighted.reduce((best, w) =>
+    Math.abs(Math.log(w.c.qty) - targetLog) < Math.abs(Math.log(best.c.qty) - targetLog)
+      ? w
+      : best,
+  ).c.qty;
+  const group = weighted.filter((w) => w.c.qty === nearestQty);
+  const price = weightedMean(group);
+  const newest = newestOf(group.map((w) => w.c));
+
+  if (group.length === 1) {
+    blockers.push({
+      code: BLOCKER_CODES.singleComparable,
+      kind: "assumable",
+      detail: `pricing is based on a single comparable at quantity ${fmtQty(nearestQty)}, nearest to the requested ${fmtQty(qtyRequested)}`,
+    });
+  } else if (group.length < CONFIDENCE_THRESHOLDS.minComparables) {
+    blockers.push({
+      code: BLOCKER_CODES.thinComparables,
+      kind: "assumable",
+      detail: `pricing is based on ${group.length} comparables at quantity ${fmtQty(nearestQty)}, nearest to the requested ${fmtQty(qtyRequested)}`,
+    });
+  }
 
   return {
-    unitPrice: mean,
+    ...base,
+    unitPrice: round(noteCompetitorBound(price)),
+    method: "nearest_qty",
     asOfDate: newest.quotedAt,
-    comparableCount: pool.length,
-    variance,
+    comparableCount: group.length,
+    variance: group.length > 1 ? weightedCv(group, price) : null,
     sourceId: newest.id,
-    citationLabel: `${newest.partNumber ?? newest.description.slice(0, 40)} @ $${newest.unitPrice.toFixed(2)} (${newest.quotedAt.toISOString().slice(0, 10)})`,
+    citationLabel: citation(newest),
+    fitSlope: null,
+    fitR2: null,
   };
+}
+
+/** Outcome × recency × scope. Tasks 3b, 4 and 5. */
+export function comparableWeight(c: Comparable, now: Date): number {
+  const scope = PRICING_CONFIG.scopeWeights[c.scope] ?? 1;
+  const recency = recencyWeight(
+    monthsBetween(c.quotedAt, now),
+    PRICING_CONFIG.recencyHalfLifeMonths,
+  );
+  const outcome = PRICING_CONFIG.outcomeWeights[c.outcome ?? "unknown"] ?? 1;
+  return Math.max(scope * recency * outcome, 1e-6);
+}
+
+/**
+ * Back-adjust a historical price by a material cost index when the shop has
+ * supplied one. When either index is missing, do not adjust and do not invent
+ * an index.
+ */
+function adjustedPrice(c: Comparable, currentCostIndex: number | null): number {
+  if (currentCostIndex == null || c.costIndex == null || c.costIndex <= 0) return c.unitPrice;
+  return c.unitPrice * (currentCostIndex / c.costIndex);
+}
+
+function logLogFit(
+  points: Weighted[],
+): { slope: number; intercept: number; r2: number; residualCv: number } | null {
+  let sw = 0, sx = 0, sy = 0, sxx = 0, sxy = 0;
+  for (const p of points) {
+    if (p.price <= 0 || p.c.qty <= 0) return null;
+    const x = Math.log(p.c.qty);
+    const y = Math.log(p.price);
+    sw += p.weight;
+    sx += p.weight * x;
+    sy += p.weight * y;
+    sxx += p.weight * x * x;
+    sxy += p.weight * x * y;
+  }
+  const denom = sw * sxx - sx * sx;
+  if (!Number.isFinite(denom) || Math.abs(denom) < 1e-12) return null;
+
+  const slope = (sw * sxy - sx * sy) / denom;
+  const intercept = (sy - slope * sx) / sw;
+
+  const ybar = sy / sw;
+  let ssRes = 0, ssTot = 0, ratioSum = 0, ratioWeight = 0;
+  for (const p of points) {
+    const x = Math.log(p.c.qty);
+    const y = Math.log(p.price);
+    const yhat = intercept + slope * x;
+    ssRes += p.weight * (y - yhat) ** 2;
+    ssTot += p.weight * (y - ybar) ** 2;
+    ratioSum += p.weight * (p.price / Math.exp(yhat));
+    ratioWeight += p.weight;
+  }
+  const r2 = ssTot <= 1e-12 ? 0 : 1 - ssRes / ssTot;
+
+  // Dispersion around the fitted curve, expressed as a CV so it can be compared
+  // against the same 15% threshold as a flat comparable set.
+  const meanRatio = ratioSum / ratioWeight;
+  let varSum = 0;
+  for (const p of points) {
+    const yhat = intercept + slope * Math.log(p.c.qty);
+    varSum += p.weight * (p.price / Math.exp(yhat) - meanRatio) ** 2;
+  }
+  const residualCv = meanRatio > 0 ? Math.sqrt(varSum / ratioWeight) / meanRatio : null;
+
+  return { slope, intercept, r2, residualCv: residualCv ?? 0 };
+}
+
+function weightedMean(points: Weighted[]): number {
+  const w = points.reduce((s, p) => s + p.weight, 0);
+  return points.reduce((s, p) => s + p.weight * p.price, 0) / w;
+}
+
+function weightedCv(points: Weighted[], mean: number): number | null {
+  if (mean <= 0) return null;
+  const w = points.reduce((s, p) => s + p.weight, 0);
+  const v = points.reduce((s, p) => s + p.weight * (p.price - mean) ** 2, 0) / w;
+  return Math.sqrt(v) / mean;
+}
+
+function newestOf(cs: Comparable[]): Comparable {
+  return [...cs].sort((a, b) => b.quotedAt.getTime() - a.quotedAt.getTime())[0];
+}
+
+function citation(c: Comparable): string {
+  return `${c.partNumber ?? c.description.slice(0, 40)} @ $${c.unitPrice.toFixed(2)} × ${fmtQty(c.qty)} (${c.quotedAt.toISOString().slice(0, 10)})`;
+}
+
+function fmtQty(q: number): string {
+  return Number.isInteger(q) ? q.toLocaleString("en-US") : q.toFixed(2);
+}
+
+function round(n: number): number {
+  return Math.round(n * 10000) / 10000;
 }

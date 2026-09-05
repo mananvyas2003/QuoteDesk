@@ -6,10 +6,17 @@ import { redirect } from "next/navigation";
 export const dynamic = "force-dynamic";
 
 export default async function OnboardingPage() {
-  const { workspace } = await getWorkspaceContext();
+  const { workspace } = await getWorkspaceContext({ requireCorpus: false });
   const lineCount = await prisma.historicalQuoteLine.count({
     where: { historicalQuote: { workspaceId: workspace.id } },
   });
+  const costCount = await prisma.costRecord.count({ where: { workspaceId: workspace.id } });
+  const distinctItems = (
+    await prisma.historicalQuoteLine.findMany({
+      where: { historicalQuote: { workspaceId: workspace.id } },
+      select: { partNumber: true, description: true },
+    })
+  ).reduce((set, l) => set.add(l.partNumber ?? l.description), new Set<string>()).size;
 
   if (workspace.onboardedAt && lineCount >= 300) {
     redirect("/");
@@ -28,7 +35,29 @@ export default async function OnboardingPage() {
         <p className="mt-2 text-[var(--ink-muted)]">
           Required before go-live: historical quotes, vendor/cost files, capability
           envelope, and margin floor. Current corpus:{" "}
-          <strong>{lineCount}</strong> priced lines (target ≥300).
+          <strong>{lineCount}</strong> priced lines, <strong>{distinctItems}</strong>{" "}
+          distinct items (PRD §7 minimum: ~300 lines and ≥50 items).
+        </p>
+      </div>
+
+      <div className="rounded-lg border border-[var(--line)] bg-[var(--panel)] p-6 text-sm shadow-[var(--shadow)]">
+        <h2 className="font-semibold">Cost files are a GREEN requirement</h2>
+        <p className="mt-2 text-[var(--ink-muted)]">
+          {workspace.requireCostForGreen ? (
+            <>
+              This workspace requires a resolvable cost record before a line can be
+              GREEN. Without one, margin cannot be checked against the{" "}
+              {workspace.marginFloorPct}% floor, and a line with unknown margin is
+              held at AMBER rather than passed silently. Cost records loaded:{" "}
+              <strong>{costCount}</strong>.
+            </>
+          ) : (
+            <>
+              This workspace allows GREEN without a cost record, so lines can be
+              auto-priced with unverified margin. Cost records loaded:{" "}
+              <strong>{costCount}</strong>.
+            </>
+          )}
         </p>
       </div>
 
@@ -64,9 +93,24 @@ export default async function OnboardingPage() {
             className="w-full rounded border border-[var(--line)] bg-white px-3 py-2 font-mono text-sm"
           />
         </label>
+        <label className="flex items-start gap-2 text-sm">
+          <input
+            name="requireCostForGreen"
+            type="checkbox"
+            defaultChecked={workspace.requireCostForGreen}
+            className="mt-1"
+          />
+          <span>
+            <span className="font-medium">Require a cost record for GREEN</span>
+            <span className="mt-1 block text-xs text-[var(--ink-muted)]">
+              Recommended. When no cost record resolves, margin is unknown and the
+              line is held at AMBER instead of auto-priced.
+            </span>
+          </span>
+        </label>
         <p className="text-xs text-[var(--ink-muted)]">
-          Seed data already includes a metal-fab corpus for Summit Metal Fab so you
-          can demo without importing. Add more lines to raise GREEN coverage.
+          Import real quote history. The demo corpus (`npm run db:seed -- --demo`) is
+          synthetic and is not valid for evaluating pricing.
         </p>
         <button
           type="submit"

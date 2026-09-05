@@ -1,0 +1,25 @@
+quote_number,quoted_at,account_name,account_domain,part_number,description,material,finish,tolerance,revision,qty,unit_price,sku,spec_hash,cost_index,outcome,competitor_price
+Q-5000,2026-09-03,Delta Systems,deltasystems.example,PL-220,Base plate 10x14x0.375,A36,mill,±1/16,Rev A,50,46.45,FAB-PL-220,,,won,
+Q-5000,2026-09-03,Delta Systems,deltasystems.example,SH-310,Shaft collar 1.5in,SS304,passivate,±0.030,Rev B,50,29.96,FAB-SH-310,,,won,
+Q-5001,2026-08-03,Harbor Works,harborworks.example,CL-045,Angle clip 2x2x0.25,A36,galvanized,ISO 2768-m,Rev C,250,4.98,FAB-CL-045,,,no_decision,
+Q-5001,2026-08-03,Harbor Works,harborworks.example,FR-880,Weldment frame 18x30,A572,primer,±1/16,Rev A,250,283.28,FAB-FR-880,,,no_decision,
+Q-5002,2026-07-03,Delta Systems,deltasystems.example,SH-310,Shaft collar 1.5in,SS304,passivate,±0.030,Rev B,10,37.38,FAB-SH-310,,,lost,35.13
+Q-5002,2026-07-03,Delta Systems,deltasystems.example,BR-100,Mounting bracket 6x4,A36,powder coat black,ISO 2768-m,Rev C,10,29.28,FAB-BR-100,,,lost,27.52
+Q-5003,2026-06-03,Harbor Works,harborworks.example,FR-880,Weldment frame 18x30,A572,primer,±1/16,Rev A,50,336.89,FAB-FR-880,,,,
+Q-5003,2026-06-03,Harbor Works,harborworks.example,PL-220,Base plate 10x14x0.375,A36,mill,±0.030,Rev B,50,46.45,FAB-PL-220,,,,
+Q-5004,2026-05-03,Delta Systems,deltasystems.example,BR-100,Mounting bracket 6x4,A36,powder coat black,ISO 2768-m,Rev C,250,15.01,FAB-BR-100,,,won,
+Q-5004,2026-05-03,Delta Systems,deltasystems.example,CL-045,Angle clip 2x2x0.25,A36,galvanized,±1/16,Rev A,250,4.98,FAB-CL-045,,,won,
+Q-5005,2026-04-03,Harbor Works,harborworks.example,PL-220,Base plate 10x14x0.375,A36,mill,±0.030,Rev B,10,60.81,FAB-PL-220,,,won,
+Q-5005,2026-04-03,Harbor Works,harborworks.example,SH-310,Shaft collar 1.5in,SS304,passivate,ISO 2768-m,Rev C,10,37.38,FAB-SH-310,,,won,
+Q-5006,2026-03-03,Delta Systems,deltasystems.example,CL-045,Angle clip 2x2x0.25,A36,galvanized,±1/16,Rev A,50,7.42,FAB-CL-045,,,no_decision,
+Q-5006,2026-03-03,Delta Systems,deltasystems.example,FR-880,Weldment frame 18x30,A572,primer,±0.030,Rev B,50,336.89,FAB-FR-880,,,no_decision,
+Q-5007,2026-02-03,Harbor Works,harborworks.example,SH-310,Shaft collar 1.5in,SS304,passivate,ISO 2768-m,Rev C,250,24.00,FAB-SH-310,,,lost,22.56
+Q-5007,2026-02-03,Harbor Works,harborworks.example,BR-100,Mounting bracket 6x4,A36,powder coat black,±1/16,Rev A,250,15.01,FAB-BR-100,,,lost,14.11
+Q-5008,2026-01-03,Delta Systems,deltasystems.example,FR-880,Weldment frame 18x30,A572,primer,±0.030,Rev B,10,400.49,FAB-FR-880,,,,
+Q-5008,2026-01-03,Delta Systems,deltasystems.example,PL-220,Base plate 10x14x0.375,A36,mill,ISO 2768-m,Rev C,10,60.81,FAB-PL-220,,,,
+Q-5009,2025-12-03,Harbor Works,harborworks.example,BR-100,Mounting bracket 6x4,A36,powder coat black,±1/16,Rev A,50,20.97,FAB-BR-100,,,won,
+Q-5009,2025-12-03,Harbor Works,harborworks.example,CL-045,Angle clip 2x2x0.25,A36,galvanized,±0.030,Rev B,50,7.42,FAB-CL-045,,,won,
+Q-5010,2025-11-03,Delta Systems,deltasystems.example,PL-220,Base plate 10x14x0.375,A36,mill,ISO 2768-m,Rev C,250,35.46,FAB-PL-220,,,won,
+Q-5010,2025-11-03,Delta Systems,deltasystems.example,SH-310,Shaft collar 1.5in,SS304,passivate,±1/16,Rev A,250,24.00,FAB-SH-310,,,won,
+Q-5011,2025-10-03,Harbor Works,harborworks.example,CL-045,Angle clip 2x2x0.25,A36,galvanized,±0.030,Rev B,10,11.06,FAB-CL-045,,,no_decision,
+Q-5011,2025-10-03,Harbor Works,harborworks.example,FR-880,Weldment frame 18x30,A572,primer,ISO 2768-m,Rev C,10,400.49,FAB-FR-880,,,no_decision,

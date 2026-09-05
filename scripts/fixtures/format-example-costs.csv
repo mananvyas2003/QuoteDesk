@@ -1,0 +1,6 @@
+sku,spec_hash,unit_cost,as_of_date,source
+FAB-BR-100,,9.40,2026-08-01,vendor_list
+FAB-PL-220,,23.50,2026-08-01,vendor_list
+FAB-CL-045,,3.10,2026-08-01,erp_export
+FAB-SH-310,,15.20,2026-08-01,vendor_list
+FAB-FR-880,,198.00,2026-08-01,erp_export

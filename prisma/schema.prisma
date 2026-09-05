@@ -13,9 +13,17 @@ model Workspace {
   name                String
   vertical            String   @default("metal_fabrication")
   marginFloorPct      Float    @default(25)
+  /// PRD §5.4 + onboarding: when true (default), a line whose margin cannot be
+  /// verified against the floor — because no cost record resolves — cannot be
+  /// GREEN. Unknown margin must not silently pass.
+  requireCostForGreen Boolean  @default(true)
   /// JSON: materials[], maxSizeIn, toleranceClasses[], certifications[], maxLeadDays, minOrderValue
   capabilityEnvelope  String   @default("{}")
   ingestEmail         String?
+  /// True only for the synthetic demo corpus loaded by `npm run db:seed -- --demo`.
+  /// Demo prices are invented; scripts/backtest.ts refuses to run on such a workspace
+  /// and the UI renders a permanent banner.
+  isDemo              Boolean  @default(false)
   onboardedAt         DateTime?
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
@@ -24,7 +32,26 @@ model Workspace {
   accounts          Account[]
   historicalQuotes  HistoricalQuote[]
   vendorPrices      VendorPrice[]
+  costRecords       CostRecord[]
   rfqs              Rfq[]
+}
+
+/// Unit cost for an item, so margin is computable against the workspace floor.
+model CostRecord {
+  id          String   @id @default(cuid())
+  workspaceId String
+  specHash    String?
+  sku         String?
+  unitCost    Float
+  asOfDate    DateTime
+  /// vendor_list | manual | erp_export
+  source      String
+  createdAt   DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@index([workspaceId, sku])
+  @@index([workspaceId, specHash])
 }
 
 model User {
@@ -62,6 +89,11 @@ model HistoricalQuote {
   total       Float?
   rawRef      String?
   createdAt   DateTime @default(now())
+  /// Recorded result of this historical quote, when the shop's export carries one.
+  /// won | lost | no_decision. Null means unrecorded, which is not evidence of a bad price.
+  outcome         String?
+  /// Known competitor price on a lost quote — a censored upper bound on what wins.
+  competitorPrice Float?
 
   workspace Workspace              @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
   account   Account?               @relation(fields: [accountId], references: [id])
@@ -75,10 +107,18 @@ model HistoricalQuoteLine {
   partNumber        String?
   material          String?
   finish            String?
+  /// PRD §5.1 lists tolerance and revision among the fields that must be extracted.
+  /// Without them here, a backtest reconstructing fields from history trips
+  /// missing_revision on every line and GREEN can never be measured.
+  tolerance         String?
+  revision          String?
   qty               Float
   unitPrice         Float
   sku               String?
   specHash          String?
+  /// Optional material cost index at the time of this quote, supplied by the shop.
+  /// Null means no index — prices are then used unadjusted and no index is invented.
+  costIndex         Float?
 
   historicalQuote HistoricalQuote @relation(fields: [historicalQuoteId], references: [id], onDelete: Cascade)
 }
@@ -132,6 +172,8 @@ model RfqLine {
   /// JSON { file, page, bbox?: [x,y,w,h], snippet }
   sourcePtr    String  @default("{}")
   extractConf  Float   @default(0.5)
+  /// JSON array of Blocker raised at extraction time, e.g. contradictory quantities
+  extractionBlockers String @default("[]")
 
   rfq           Rfq            @relation(fields: [rfqId], references: [id], onDelete: Cascade)
   resolvedItem  ResolvedItem?
@@ -153,13 +195,23 @@ model ResolvedItem {
 model PriceBasis {
   id               String   @id @default(cuid())
   resolvedItemId   String   @unique
-  sourceType       String   // historical_quote | vendor_list | cost_record
+  /// historical_quote | vendor_list | cost_record
+  sourceType       String
   sourceId         String?
   unitPrice        Float?
   asOfDate         DateTime?
   comparableCount  Int      @default(0)
   variance         Float?   // coefficient of variation
   citationLabel    String?
+  /// How the unit price was derived: loglog_fit | nearest_qty | single_comparable | none
+  method           String   @default("none")
+  /// The quantity this basis was evaluated at, and the quantity range of the comparables used
+  qtyRequested     Float?
+  qtyRangeMin      Float?
+  qtyRangeMax      Float?
+  /// ln(unit_price) = a + b*ln(qty) fit diagnostics, when method = loglog_fit
+  fitSlope         Float?
+  fitR2            Float?
 
   resolvedItem ResolvedItem @relation(fields: [resolvedItemId], references: [id], onDelete: Cascade)
   quoteLines   QuoteLine[]
@@ -194,6 +246,10 @@ model QuoteLine {
   confidenceState String
   clarification   String?
   leadDays        Int?
+  /// (price - cost) / price, when a cost record resolved. Null when cost is unknown.
+  marginPct       Float?
+  /// JSON array of { qty, unitPrice, method, confidenceState, blockerCodes[] } — one per requested quantity break
+  qtyBreakPricing String @default("[]")
 
   quote        Quote         @relation(fields: [quoteId], references: [id], onDelete: Cascade)
   resolvedItem ResolvedItem? @relation(fields: [resolvedItemId], references: [id])

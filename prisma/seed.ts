@@ -2,7 +2,38 @@ import { PrismaClient } from "@prisma/client";
 
 const prisma = new PrismaClient();
 
+/**
+ * The demo corpus is INVENTED DATA. It exists so the UI can be smoke-tested
+ * without a customer's quote history, and for nothing else.
+ *
+ * It must never be loaded by accident, and a workspace holding it is flagged
+ * `isDemo` so the UI banners it and scripts/backtest.ts refuses to measure
+ * against it. Loading it is a deliberate act, hence the required flag.
+ */
 async function main() {
+  if (!process.argv.includes("--demo")) {
+    console.error(
+      [
+        "",
+        "Refusing to seed: this corpus is SYNTHETIC.",
+        "",
+        "Its prices are invented. Anything measured against it — GREEN rate,",
+        "pricing accuracy, K3 — is meaningless. It is for UI smoke-testing only.",
+        "",
+        "If that is what you want, ask for it explicitly:",
+        "",
+        "    npm run db:seed -- --demo",
+        "",
+        "The workspace it creates is flagged isDemo, banners itself in the UI,",
+        "and is refused by scripts/backtest.ts.",
+        "",
+        "To onboard a real shop instead, see PRD §7 and scripts/BACKTEST.md.",
+        "",
+      ].join("\n"),
+    );
+    process.exit(1);
+  }
+
   await prisma.outcome.deleteMany();
   await prisma.editEvent.deleteMany();
   await prisma.assumption.deleteMany();
@@ -21,9 +52,10 @@ async function main() {
 
   const workspace = await prisma.workspace.create({
     data: {
-      name: "Summit Metal Fab",
+      name: "Summit Metal Fab (DEMO — synthetic prices)",
       vertical: "metal_fabrication",
       marginFloorPct: 25,
+      isDemo: true,
       ingestEmail: "quotes@summitmetalfab.example",
       capabilityEnvelope: JSON.stringify({
         materials: ["A36", "A572", "SS304", "SS316", "AL6061", "Mild Steel", "Aluminum"],
@@ -303,7 +335,9 @@ async function main() {
     ],
   });
 
-  console.log("Seeded workspace:", workspace.name);
+  console.log("");
+  console.log("Seeded DEMO workspace:", workspace.name);
+  console.log("Prices are synthetic. Not valid for evaluation.");
   console.log("Estimator login email:", estimator.email);
   console.log("Workspace id:", workspace.id);
 }

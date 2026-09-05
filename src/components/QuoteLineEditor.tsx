@@ -26,11 +26,39 @@ type Line = {
     unitPrice: number | null;
     asOfDate: Date | string | null;
     sourceType: string;
+    method: string;
+    qtyRequested: number | null;
+    qtyRangeMin: number | null;
+    qtyRangeMax: number | null;
+    fitSlope: number | null;
+    fitR2: number | null;
   } | null;
+  qtyBreakPricing?: string;
+  marginPct?: number | null;
+};
+
+type BreakPricing = {
+  qty: number;
+  unitPrice: number | null;
+  method: string;
+  confidenceState: string;
+};
+
+const METHOD_LABELS: Record<string, string> = {
+  loglog_fit: "quantity curve fit",
+  nearest_qty: "nearest quantity",
+  single_comparable: "single comparable",
+  none: "no basis",
 };
 
 export function QuoteLineEditor({ line }: { line: Line }) {
   const [price, setPrice] = useState(line.unitPrice?.toString() ?? "");
+  let breaks: BreakPricing[] = [];
+  try {
+    breaks = JSON.parse(line.qtyBreakPricing || "[]") as BreakPricing[];
+  } catch {
+    breaks = [];
+  }
   const [reason, setReason] = useState("");
   const [pending, startTransition] = useTransition();
 
@@ -94,7 +122,59 @@ export function QuoteLineEditor({ line }: { line: Line }) {
           {line.priceBasis.comparableCount === 1 ? "" : "s"}
           {line.priceBasis.variance != null &&
             ` · CV ${(line.priceBasis.variance * 100).toFixed(0)}%`}
+          <br />
+          Method:{" "}
+          <span className="font-medium text-[var(--ink)]">
+            {METHOD_LABELS[line.priceBasis.method] ?? line.priceBasis.method}
+          </span>
+          {line.priceBasis.qtyRangeMin != null && line.priceBasis.qtyRangeMax != null && (
+            <>
+              {" · priced at qty "}
+              {line.priceBasis.qtyRequested?.toLocaleString()}
+              {" from comparables spanning qty "}
+              {line.priceBasis.qtyRangeMin.toLocaleString()}–
+              {line.priceBasis.qtyRangeMax.toLocaleString()}
+            </>
+          )}
+          {line.priceBasis.method === "loglog_fit" &&
+            line.priceBasis.fitSlope != null &&
+            ` · slope ${line.priceBasis.fitSlope.toFixed(3)}, r² ${(line.priceBasis.fitR2 ?? 0).toFixed(2)}`}
         </p>
+      )}
+
+      <p className="mb-2 text-xs text-[var(--ink-muted)]">
+        Margin:{" "}
+        {line.marginPct != null ? (
+          <span className="font-medium text-[var(--ink)]">
+            {(line.marginPct * 100).toFixed(1)}%
+          </span>
+        ) : (
+          <span className="font-medium text-[var(--amber)]">
+            unknown — no cost record resolves for this item
+          </span>
+        )}
+      </p>
+
+      {breaks.length > 0 && (
+        <div className="mb-2 rounded border border-[var(--line)] bg-[var(--bg-elevated)] px-3 py-2">
+          <p className="mb-1 text-xs font-semibold uppercase tracking-wide text-[var(--ink-muted)]">
+            Quantity breaks
+          </p>
+          <ul className="space-y-1 text-xs">
+            {breaks.map((b) => (
+              <li key={b.qty} className="flex items-center gap-2">
+                <span className="w-16 text-[var(--ink-muted)]">{b.qty.toLocaleString()}</span>
+                <ConfidenceBadge state={b.confidenceState} />
+                <span className="font-medium">
+                  {b.unitPrice != null ? `$${b.unitPrice.toFixed(2)}` : "not priced"}
+                </span>
+                <span className="text-[var(--ink-muted)]">
+                  {METHOD_LABELS[b.method] ?? b.method}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
 
       {line.assumption && (
