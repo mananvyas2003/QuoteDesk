@@ -13,15 +13,20 @@ on ≥70% of lines — requires a real shop's quote history. The harness exists
 Until a real corpus runs through it, nothing here establishes that the pricing
 signal is in the history.
 
-**This repo is feature-frozen.** See [FREEZE.md](FREEZE.md) for what that
-allows and the single condition that lifts it.
+**This repo is feature-frozen, with one recorded exception.** See
+[FREEZE.md](FREEZE.md) for what the freeze allows and the single condition that
+lifts it. Email-native ingest and estimator notification were built under an
+explicit override of that freeze; nothing in the pricing or confidence path was
+touched to do it.
 
 ## Stack
 
 - Next.js 16 (App Router) + TypeScript + Tailwind
 - Prisma 5 + SQLite (local). Swap `DATABASE_URL` to Postgres for production.
 - Deterministic extraction + historical price-basis resolution (multimodal OCR can replace the extractor later)
-- Tests: `node:test` + `tsx`, no extra dependencies
+- Tests: `node:test` + `tsx`, no test-framework dependency
+- `@anthropic-ai/sdk`, used only for the optional borderline-RFQ classifier and
+  lazily imported — the app runs fully without it configured
 
 ## Setup
 
@@ -43,6 +48,92 @@ The `--demo` flag is required. The corpus it loads is invented; the workspace is
 flagged `isDemo`, banners itself on every page as *"Demo corpus — prices are
 synthetic. Not valid for evaluation."*, and is refused by the backtest harness.
 
+## Inbound email
+
+An RFQ that arrives by email is detected, ingested, drafted and surfaced to the
+estimator. **Nothing is ever sent to the buyer automatically** — a quote leaves
+the building only when a human acts on the review screen.
+
+```
+provider inbound-parse  ->  POST /api/inbound-email
+                              -> persist InboundEmail (dedupe on Message-ID)
+                              -> classify: is this an RFQ?
+                              -> ingestRfq -> draftQuoteForRfq   (existing pipeline)
+                              -> notify the estimator, link to /rfqs/<id>
+```
+
+### V1 channel: inbound webhook
+
+The chosen V1 approach is an **inbound-parse webhook**, not IMAP polling. It
+needs no long-lived mailbox credentials, no poller process, and no OAuth, and
+it is exercised end-to-end by a fixture in CI. Have the shop forward or
+auto-forward their `quotes@` mailbox to an inbound-parse provider and point it
+at `POST /api/inbound-email`.
+
+Payload shapes accepted: **Postmark**, **SendGrid**, **Resend**, **Mailgun**, and
+a raw MIME body. They are normalised to one internal shape before anything else
+runs, so all providers and the local fixture share a single code path.
+
+Authentication is a shared secret sent as `X-QuoteDesk-Secret` (or `?secret=`).
+**The endpoint returns 503 until `INBOUND_WEBHOOK_SECRET` is set** — it will not
+accept unauthenticated mail into the pricing pipeline.
+
+### Env vars
+
+See [`.env.example`](.env.example). The ones that matter:
+
+| Variable | Required | Purpose |
+|---|---|---|
+| `INBOUND_WEBHOOK_SECRET` | to receive mail | Shared secret for the webhook. Unset → 503. |
+| `INBOUND_STORAGE_DIR` | no | Where attachment bytes are written (default `storage/inbound`). |
+| `NOTIFY_EMAIL` | no | Who gets the "draft ready" email. Defaults to the workspace estimator. |
+| `NOTIFY_FROM_EMAIL`, `RESEND_API_KEY` | no | Outbound notification mail. Unset → in-app notification only, recorded as `not_sent:no_provider_configured`. |
+| `APP_URL` | no | Base URL used in notification links. |
+| `ANTHROPIC_API_KEY` | no | Optional second opinion on borderline classifications. Unset → rules-only, which is fully supported. |
+
+### RFQ detection
+
+`src/lib/rfqClassify.ts` runs deterministic rules first: explicit asks ("RFQ",
+"please quote", "same as PO 4471"), supporting signals (quantity breaks, part
+numbers, revisions, material specs, pipe tables), and negative signals (bounces,
+auto-replies, marketing, remittance advice).
+
+The bias is deliberately one-way and pinned by tests: **when in doubt, treat it
+as an RFQ.** A missed RFQ costs the shop a job invisibly (PRD §1.3); a false
+positive costs an estimator a few seconds reading a RED line. A negative signal
+can lower certainty but cannot overrule an explicit ask — a purchase order that
+also asks to price one extra line is still an RFQ for that line.
+
+When `ANTHROPIC_API_KEY` is set, borderline verdicts (certainty 0.35–0.70) get a
+second opinion from Claude. Confident verdicts never cost an API call. Any
+failure — no key, no package, timeout, refusal — falls back to the rules verdict
+rather than dropping mail. Email content is passed as delimited untrusted data
+and the response is schema-constrained.
+
+### Try it locally
+
+```bash
+npm run mail:fixture                                   # both bundled fixtures
+npm run mail:fixture -- scripts/fixtures/sample-rfq.eml
+npm run mail:fixture -- scripts/fixtures/sample-rfq.eml --webhook http://localhost:3000
+```
+
+Without `--webhook` it calls the same `receiveInboundEmail` the route calls;
+with it, the HTTP layer and shared secret are exercised too. Re-running the same
+fixture reports `duplicate` — proof the Message-ID dedupe holds.
+
+Received mail, including everything skipped as not-an-RFQ and why, is listed at
+**/inbound**.
+
+### What inbound email does not do
+
+- **No OCR.** Attachment bytes are stored and their metadata recorded; nothing
+  reads them. A scanned print with no extractable body lines correctly produces
+  a RED line asking the buyer for specs.
+- **No auto-send.** The only outbound mail path notifies the shop's own
+  estimator, and it refuses structurally to address the RFQ's sender.
+- **No IMAP polling.** Webhook only.
+
 ## Demo path
 
 1. **Inbox** — RFQ list + answer coverage
@@ -54,9 +145,10 @@ synthetic. Not valid for evaluation."*, and is refused by the backtest harness.
 
 ## PRD alignment
 
-State of `main` as merged (`cdf2db4`), verified by the run recorded in
-[reports/01-post-merge.md](reports/01-post-merge.md): 51 tests pass, lint clean,
-build clean, 8 migrations with none pending.
+State of `main`. The pricing correction pass is recorded in
+[reports/01-post-merge.md](reports/01-post-merge.md) (51 tests at that point);
+inbound email adds 17 more. Current: **68 tests pass**, lint clean, build clean,
+9 migrations with none pending.
 
 Every "Done" links to the test or report that proves it. Nothing is marked Done
 on the strength of the demo rendering.
@@ -77,7 +169,10 @@ on the strength of the demo rendering.
 | §2 K3 backtest harness | Done | [backtest.test.ts](tests/backtest.test.ts) — runs end-to-end, refuses demo and seed corpora |
 | **§2 K3 threshold itself (±10% on ≥70%)** | **Not measured** | [reports/k3-backtest.md](reports/k3-backtest.md) — requires a real shop's export |
 | §5.1 Scanned raster / title-block OCR | Not implemented | — |
-| Email / IMAP ingest | Not implemented | — |
+| §5.1 Email ingest (inbound webhook) | Done — webhook, not IMAP | [inbound-email.test.ts](tests/inbound-email.test.ts) — RFQ email drafts, duplicate Message-ID is a no-op, non-RFQ creates no quote |
+| §5.1 RFQ detection | Done | [rfq-classify.test.ts](tests/rfq-classify.test.ts) — RFQ/non-RFQ fixtures, and the bias-to-review guard |
+| §5.3 Estimator notified, never the buyer | Done | [inbound-email.test.ts](tests/inbound-email.test.ts) — `a notification is never addressed to the buyer` |
+| IMAP mailbox polling | Not implemented | Webhook is the V1 channel |
 
 ### Confidence thresholds
 
@@ -100,8 +195,11 @@ Named explicitly so the demo cannot imply otherwise.
   work". Extraction is text and pipe-table only. A scanned print with an
   illegible title block correctly goes RED, but it goes RED because nothing
   reads it, not because a reader judged it illegible.
-- **Email / IMAP ingest.** Ingest is paste and file-name only. The settings page
-  displays an ingest address; nothing polls it.
+- **IMAP / mailbox polling.** Inbound email arrives by webhook only
+  (see [Inbound email](#inbound-email)). Nothing logs into a mailbox.
+- **Outbound quote sending.** The estimator copies out or marks sent. The only
+  outbound mail in the codebase notifies the shop's own estimator, and refuses
+  structurally to address the buyer.
 - **Vendor-list and cost-record price bases.** `PriceBasis.sourceType` accepts
   `historical_quote | vendor_list | cost_record`, but only `historical_quote` is
   ever produced. The `VendorPrice` table is seeded and displayed, never priced
@@ -120,10 +218,11 @@ Named explicitly so the demo cannot imply otherwise.
 | Command | What it does |
 |---|---|
 | `npm run dev` | Local app |
-| `npm test` | Full suite (51 tests) |
+| `npm test` | Full suite (68 tests) |
 | `npm run backtest -- --data <path>` | K3 backtest on a real export — see [scripts/BACKTEST.md](scripts/BACKTEST.md) |
 | `npm run confidence:dist` | Confidence-state distribution over 15 hand-written RFQs |
 | `npm run confidence:dist -- --no-costs` | Same, with no cost records — shows what the GREEN cost gate costs |
+| `npm run mail:fixture` | Feed a local .eml through the inbound pipeline |
 | `npm run db:seed -- --demo` | Load the synthetic demo corpus (flag required) |
 | `npm run db:studio` | Prisma Studio |
 | `npm run build` | Production build |

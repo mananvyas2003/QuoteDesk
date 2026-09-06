@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { prisma } from "@/lib/db";
 import { getWorkspaceContext } from "@/lib/workspace";
 import { updateSettingsAction } from "@/lib/actions";
@@ -21,6 +22,17 @@ export default async function SettingsPage() {
       quoteLine: { confidenceState: "GREEN" },
     },
   });
+
+  const inboundTotal = await prisma.inboundEmail.count({
+    where: { workspaceId: workspace.id },
+  });
+  const inboundDrafted = await prisma.inboundEmail.count({
+    where: { workspaceId: workspace.id, status: "drafted" },
+  });
+  const inboundSkipped = await prisma.inboundEmail.count({
+    where: { workspaceId: workspace.id, status: "skipped_not_rfq" },
+  });
+  const appUrl = (process.env.APP_URL ?? "http://localhost:3000").replace(/\/$/, "");
 
   return (
     <div className="mx-auto max-w-xl space-y-8">
@@ -102,13 +114,45 @@ export default async function SettingsPage() {
       </form>
 
       <div className="rounded-lg border border-[var(--line)] bg-[var(--panel)] p-6 text-sm">
+        <h2 className="font-semibold">Inbound email</h2>
+        <p className="mt-2 text-[var(--ink-muted)]">
+          Ingest address:{" "}
+          <span className="font-medium text-[var(--ink)]">
+            {workspace.ingestEmail ?? "not set"}
+          </span>
+        </p>
+        <p className="mt-3 text-[var(--ink-muted)]">
+          Have the shop forward or auto-forward that mailbox to your inbound-parse
+          provider, and point the provider&apos;s webhook at:
+        </p>
+        <pre className="mt-2 overflow-x-auto rounded bg-[var(--bg)] p-3 font-mono text-xs">
+          POST {appUrl}/api/inbound-email{"\n"}
+          X-QuoteDesk-Secret: &lt;INBOUND_WEBHOOK_SECRET&gt;
+        </pre>
+        <p className="mt-2 text-xs text-[var(--ink-muted)]">
+          Postmark, SendGrid, Resend and Mailgun payload shapes are accepted, as is
+          a raw MIME body. The endpoint returns 503 until{" "}
+          <code className="font-mono">INBOUND_WEBHOOK_SECRET</code> is set — it will
+          not accept unauthenticated mail.
+        </p>
+        <p className="mt-3 text-[var(--ink-muted)]">
+          Received {inboundTotal} email{inboundTotal === 1 ? "" : "s"} ·{" "}
+          {inboundDrafted} drafted · {inboundSkipped} skipped as not-an-RFQ.{" "}
+          <Link href="/inbound" className="font-medium text-[var(--brand)]">
+            Inbound mail →
+          </Link>
+        </p>
+        <p className="mt-3 text-xs text-[var(--ink-muted)]">
+          Inbound mail is drafted and the estimator is notified. Nothing is sent to
+          a buyer without an explicit action on the review screen.
+        </p>
+      </div>
+
+      <div className="rounded-lg border border-[var(--line)] bg-[var(--panel)] p-6 text-sm">
         <h2 className="font-semibold">Trust proxy (K4)</h2>
         <p className="mt-2 text-[var(--ink-muted)]">
           Edit events captured: {editCount}. Edits on GREEN lines: {greenEdits}.
           Target after 4 weeks live: ≤30% edit rate on GREEN.
-        </p>
-        <p className="mt-2 text-[var(--ink-muted)]">
-          Ingest address: {workspace.ingestEmail ?? "not set"}
         </p>
       </div>
     </div>

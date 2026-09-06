@@ -41,6 +41,16 @@ export default async function InboxPage() {
   const answered = rfqs.filter((r) => r.status === "sent" || r.status === "closed").length;
   const coverage = rfqs.length ? Math.round((answered / rfqs.length) * 100) : 0;
 
+  // Drafts waiting on a human. Nothing here has been sent to a customer.
+  const notifications = await prisma.notification.findMany({
+    where: { workspaceId: workspace.id, readAt: null },
+    orderBy: { createdAt: "desc" },
+    take: 5,
+  });
+  const skippedMail = await prisma.inboundEmail.count({
+    where: { workspaceId: workspace.id, status: "skipped_not_rfq" },
+  });
+
   return (
     <div className="space-y-8">
       <div className="flex flex-wrap items-end justify-between gap-4">
@@ -60,6 +70,34 @@ export default async function InboxPage() {
           Ingest RFQ
         </Link>
       </div>
+
+      {notifications.length > 0 && (
+        <section className="rounded-lg border border-[var(--amber)]/40 bg-[var(--amber-bg)]/50 p-4">
+          <div className="flex flex-wrap items-baseline justify-between gap-2">
+            <h2 className="text-sm font-semibold uppercase tracking-wide text-[var(--amber)]">
+              Waiting for review
+            </h2>
+            <Link href="/inbound" className="text-xs font-medium text-[var(--brand)]">
+              Inbound mail{skippedMail ? ` · ${skippedMail} skipped` : ""} →
+            </Link>
+          </div>
+          <ul className="mt-2 space-y-2">
+            {notifications.map((n) => (
+              <li key={n.id} className="text-sm">
+                <Link
+                  href={n.linkPath ?? "/inbound"}
+                  className="font-medium text-[var(--ink)] hover:text-[var(--brand)]"
+                >
+                  {n.title}
+                </Link>
+                {n.body && (
+                  <p className="text-xs text-[var(--ink-muted)]">{n.body}</p>
+                )}
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       {rfqs.length === 0 ? (
         <div className="rounded-lg border border-dashed border-[var(--line)] bg-[var(--panel)] p-10 text-center">
@@ -81,7 +119,14 @@ export default async function InboxPage() {
                   className="flex flex-wrap items-center justify-between gap-3 px-4 py-4 hover:bg-[var(--bg-elevated)]"
                 >
                   <div>
-                    <p className="font-medium">{rfq.subject ?? "Untitled RFQ"}</p>
+                    <p className="flex items-center gap-2 font-medium">
+                      {rfq.subject ?? "Untitled RFQ"}
+                      {rfq.channel === "email" && (
+                        <span className="rounded bg-[var(--bg-elevated)] px-1.5 py-0.5 text-xs font-medium text-[var(--ink-muted)]">
+                          Email
+                        </span>
+                      )}
+                    </p>
                     <p className="text-sm text-[var(--ink-muted)]">
                       {rfq.account?.name ?? rfq.fromEmail ?? "Unknown account"} ·{" "}
                       {rfq.receivedAt.toLocaleString()} · {rfq.status}

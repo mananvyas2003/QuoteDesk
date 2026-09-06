@@ -2,6 +2,28 @@
 
 **This repository is feature-frozen.**
 
+## Recorded override: email-native ingest and notification
+
+The owner explicitly overrode this freeze once, for **inbound email ingest and
+estimator notification only**. That work is merged. It is recorded here rather
+than quietly folded in, so the freeze's history stays auditable.
+
+What the override covered: an inbound-parse webhook, RFQ detection, the bridge
+into the existing ingest → draft pipeline, estimator notification, and the
+operator screens for them. It added `InboundEmail` and `Notification` models, an
+`/inbound` page, an `/api/inbound-email` route, and `@anthropic-ai/sdk` for an
+optional borderline classifier.
+
+What it did **not** touch, deliberately:
+
+- `CONFIDENCE_THRESHOLDS` and `PRICING_CONFIG` — byte-identical.
+- No new pricing mechanism, no new comparable source, no new blocker code.
+  Classification decides only whether the existing pipeline runs at all.
+- `src/lib/{resolve,pricing,confidence,draft,extract}.ts` — unmodified.
+
+The reasoning below is unchanged by that override, and the lift condition is
+still the only thing that ends the freeze. K3 remains unmeasured.
+
 ## Why
 
 Every mechanism currently in the pricing path carries unvalidated constants:
@@ -58,8 +80,10 @@ kill criterion is unevaluated. PRD §2 is explicit that K3 is the one people ski
   rounding. They stay unvalidated until real data measures them — changing one
   now destroys the baseline the first measurement will be read against.
 - **OCR** of scanned raster prints or title blocks.
-- **Email / IMAP ingest.**
-- **New pages or Prisma models.**
+- **Email / IMAP ingest** — *lifted for the recorded override above.* Inbound
+  webhook ingest is built; IMAP polling and outbound quote sending are not, and
+  remain frozen.
+- **New pages or Prisma models**, beyond those the recorded override added.
 
 ## Allowed during the freeze
 

@@ -71,6 +71,9 @@ export default async function RootLayout({ children }: LayoutProps<"/">) {
               <Link href="/" className="hover:text-[var(--ink)]">
                 Inbox
               </Link>
+              <Link href="/inbound" className="hover:text-[var(--ink)]">
+                Inbound mail
+              </Link>
               <Link href="/rfqs/new" className="hover:text-[var(--ink)]">
                 New RFQ
               </Link>

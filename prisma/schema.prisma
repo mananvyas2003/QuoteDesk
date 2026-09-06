@@ -34,6 +34,8 @@ model Workspace {
   vendorPrices      VendorPrice[]
   costRecords       CostRecord[]
   rfqs              Rfq[]
+  inboundEmails     InboundEmail[]
+  notifications     Notification[]
 }
 
 /// Unit cost for an item, so margin is computable against the workspace floor.
@@ -62,9 +64,10 @@ model User {
   role        String   @default("estimator") // estimator | owner | controller
   createdAt   DateTime @default(now())
 
-  workspace   Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
-  editEvents  EditEvent[]
-  assumptions Assumption[]
+  workspace     Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  editEvents    EditEvent[]
+  assumptions   Assumption[]
+  notifications Notification[]
 }
 
 /// Buyer / customer account matched from inbound RFQs
@@ -157,6 +160,7 @@ model Rfq {
   account   Account?  @relation(fields: [accountId], references: [id])
   lines     RfqLine[]
   quote     Quote?
+  inboundEmail InboundEmail?
 }
 
 model RfqLine {
@@ -292,4 +296,66 @@ model Outcome {
   at              DateTime @default(now())
 
   quote Quote @relation(fields: [quoteId], references: [id], onDelete: Cascade)
+}
+
+/// One inbound email received on the ingest channel (PRD §5.1: "Input: one email
+/// address").
+///
+/// Stored before it is classified, so an email that is not an RFQ still leaves a
+/// record with the reason it was skipped. `messageId` is unique: providers retry
+/// webhook deliveries, and a retry must never create a second RFQ.
+model InboundEmail {
+  id          String   @id @default(cuid())
+  workspaceId String
+  /// RFC 5322 Message-ID. The deduplication key.
+  messageId   String   @unique
+  fromEmail   String
+  fromName    String?
+  toEmail     String?
+  subject     String?
+  textBody    String?
+  htmlBody    String?
+  receivedAt  DateTime @default(now())
+  /// JSON array of { fileName, mimeType, size, storagePath } — metadata only.
+  /// Attachments are stored, never parsed: there is no OCR in this build.
+  attachments String   @default("[]")
+  /// received | classified_rfq | skipped_not_rfq | drafted | error
+  status      String   @default("received")
+  /// JSON { isRfq, confidence, reason, signals[], classifier }
+  classification String?
+  /// Set once the email has been ingested and drafted.
+  rfqId       String?  @unique
+  error       String?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  rfq       Rfq?      @relation(fields: [rfqId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, receivedAt])
+  @@index([workspaceId, status])
+}
+
+/// An in-app notification for an estimator. Created when a draft is ready for
+/// review — never when a quote is sent, because nothing sends a quote without an
+/// explicit estimator action.
+model Notification {
+  id          String    @id @default(cuid())
+  workspaceId String
+  userId      String?
+  /// draft_ready | ingest_error
+  kind        String
+  title       String
+  body        String?
+  /// In-app path the notification links to, e.g. /rfqs/<id>
+  linkPath    String?
+  readAt      DateTime?
+  /// Whether an email copy was dispatched to the estimator, and what happened.
+  emailStatus String?
+  createdAt   DateTime  @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  user      User?     @relation(fields: [userId], references: [id], onDelete: SetNull)
+
+  @@index([workspaceId, readAt])
 }
