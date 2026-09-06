@@ -13,7 +13,7 @@ import {
  * headers, quoted-printable and base64 transfer encodings, and multipart bodies
  * with attachments. It does not attempt nested multipart trees beyond one level
  * of recursion, and it does not decode attachment content beyond recording it —
- * there is no OCR in this build, so attachment bytes are stored, not read.
+ * attachment bytes are stored and read later by src/lib/documents, not here.
  */
 export function parseEml(raw: string): InboundEmailPayload {
   const { headers, body } = splitHeaders(raw);

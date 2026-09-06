@@ -3,6 +3,7 @@ import { join, resolve } from "node:path";
 import { prisma } from "./db";
 import { htmlToText } from "./email/parseEml";
 import type { InboundAttachment, InboundEmailPayload } from "./email/types";
+import type { DocumentExtractor } from "./documents";
 import { classifyRfq, type RfqClassification } from "./rfqClassify";
 import { ingestRfq } from "./ingest";
 import { notifyDraftReady, notifyIngestError } from "./notify";
@@ -35,7 +36,12 @@ export type InboundOutcome =
 export async function receiveInboundEmail(
   workspaceId: string,
   payload: InboundEmailPayload,
-  opts?: { allowLlm?: boolean; storageDir?: string },
+  opts?: {
+    allowLlm?: boolean;
+    storageDir?: string;
+    /** Injectable so the document path is testable without an API key. */
+    documentExtractor?: DocumentExtractor;
+  },
 ): Promise<InboundOutcome> {
   // 1. Deduplicate. Providers retry deliveries; a retry must not re-ingest.
   const existing = await prisma.inboundEmail.findUnique({
@@ -114,7 +120,11 @@ export async function receiveInboundEmail(
       fromName: payload.fromName,
       body: bodyText,
       channel: "email",
-      fileName: stored[0]?.fileName ?? "email.txt",
+      // The body is the body. Naming it after the first attachment made every
+      // body-extracted field cite a filename it did not come from.
+      fileName: "email.txt",
+      attachments: stored,
+      documentOpts: { extractor: opts?.documentExtractor, allowLlm: opts?.allowLlm },
     });
 
     const states = quote.lines.map((l) => l.confidenceState);
@@ -172,9 +182,10 @@ export function plainTextBody(payload: InboundEmailPayload): string {
 /**
  * Write attachment bytes to local storage and return metadata.
  *
- * Metadata only reaches the database; bytes go to disk. Nothing reads them —
- * there is no OCR in this build, and a scanned print with no extractable lines
- * correctly produces a RED line asking the buyer for specs.
+ * Metadata only reaches the database; bytes go to disk. The document extractor
+ * reads them back from `storagePath` at ingest time — see src/lib/documents.
+ * When it cannot (unsupported type, oversized, no key configured) the reason is
+ * surfaced on the RFQ rather than swallowed, and the body-only draft stands.
  */
 async function storeAttachments(
   payload: InboundEmailPayload,

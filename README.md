@@ -23,7 +23,8 @@ touched to do it.
 
 - Next.js 16 (App Router) + TypeScript + Tailwind
 - Prisma 5 + SQLite (local). Swap `DATABASE_URL` to Postgres for production.
-- Deterministic extraction + historical price-basis resolution (multimodal OCR can replace the extractor later)
+- Deterministic extraction from the email body, plus multimodal extraction from
+  attached drawings and PDFs; historical price-basis resolution on top
 - Tests: `node:test` + `tsx`, no test-framework dependency
 - `@anthropic-ai/sdk`, used only for the optional borderline-RFQ classifier and
   lazily imported — the app runs fully without it configured
@@ -89,7 +90,8 @@ See [`.env.example`](.env.example). The ones that matter:
 | `NOTIFY_EMAIL` | no | Who gets the "draft ready" email. Defaults to the workspace estimator. |
 | `NOTIFY_FROM_EMAIL`, `RESEND_API_KEY` | no | Outbound notification mail. Unset → in-app notification only, recorded as `not_sent:no_provider_configured`. |
 | `APP_URL` | no | Base URL used in notification links. |
-| `ANTHROPIC_API_KEY` | no | Optional second opinion on borderline classifications. Unset → rules-only, which is fully supported. |
+| `ANTHROPIC_API_KEY` | no | Two uses: a second opinion on borderline classifications, and reading attached drawings. Unset → rules-only classification and attachments recorded as unread. Both are fully supported. |
+| `DOCUMENT_MAX_COUNT`, `DOCUMENT_MAX_BYTES` | no | Caps on documents read per RFQ (default 5) and per-document size (default 8MB). |
 
 ### RFQ detection
 
@@ -127,12 +129,52 @@ Received mail, including everything skipped as not-an-RFQ and why, is listed at
 
 ### What inbound email does not do
 
-- **No OCR.** Attachment bytes are stored and their metadata recorded; nothing
-  reads them. A scanned print with no extractable body lines correctly produces
-  a RED line asking the buyer for specs.
+- **No CAD geometry.** A `.step` / `.dwg` / `.dxf` attachment is recorded and
+  reported as unread, never silently ignored. PDFs and images are read (see
+  [Reading attached drawings](#reading-attached-drawings)).
 - **No auto-send.** The only outbound mail path notifies the shop's own
   estimator, and it refuses structurally to address the RFQ's sender.
 - **No IMAP polling.** Webhook only.
+
+## Reading attached drawings
+
+Most fabrication RFQs carry the ask in the email body and the specification in
+an attached print: *"20 off PN-4471, need it in three weeks"* with the material,
+finish, tolerance and revision sitting in the drawing's title block. Neither half
+is enough on its own to reach GREEN.
+
+At ingest, PDF and image attachments are read (`src/lib/documents`) and what they
+say is folded into what the body said:
+
+- **A document line that matches a body line enriches it**, keyed on part number,
+  falling back to a strict description match. It does not become a second line.
+- **The body wins where both speak.** A value the buyer typed was written by the
+  buyer; a value read off a drawing was read by a model.
+- **A drawing that contradicts the email quantity raises `qty_conflict`** and the
+  line goes RED. We cannot tell which one applies, so we do not guess.
+- **A part only the drawing mentions becomes its own line**, quantity 1 unless the
+  drawing states otherwise.
+
+### What keeps it honest
+
+- **A field read at low legibility is discarded, not carried.** An absent material
+  raises the existing `missing_material` blocker, so the line goes AMBER with a
+  published assumption the estimator confirms. A kept low-confidence value would
+  instead have produced a confidently wrong GREEN. The asymmetry between those two
+  outcomes sets the direction of every threshold in `EXTRACTION_CONFIDENCE`.
+- **No model output becomes a price.** The extractor is forbidden a price by both
+  its response schema and its prompt. It emits the same `ExtractedFields` shape the
+  text parser emits, and it passes through the same confidence gate. No new blocker
+  code was added.
+- **Nothing is extracted that cannot be cited** (PRD §5.1). Every field carries a
+  `SourcePointer` naming the file, the page and a verbatim snippet.
+- **The document is untrusted data.** A drawing comes from an outside party;
+  instructions inside it are content, never commands, and the prompt says so.
+- **It is an enhancement, never a dependency.** No key, a timeout or a malformed
+  reply means attachments are recorded as unread *with the reason shown on the RFQ*
+  and the draft proceeds from the body alone. An estimator told nothing would
+  assume the drawing was understood.
+- **Caps are enforced before bytes are read**: 5 documents per RFQ, 8MB each.
 
 ## Demo path
 
@@ -168,7 +210,7 @@ on the strength of the demo rendering.
 | §7 Cold start / onboarding gate | Done | [demo-guard.test.ts](tests/demo-guard.test.ts) — empty non-demo corpus fails loudly, citing §7 |
 | §2 K3 backtest harness | Done | [backtest.test.ts](tests/backtest.test.ts) — runs end-to-end, refuses demo and seed corpora |
 | **§2 K3 threshold itself (±10% on ≥70%)** | **Not measured** | [reports/k3-backtest.md](reports/k3-backtest.md) — requires a real shop's export |
-| §5.1 Scanned raster / title-block OCR | Not implemented | — |
+| §5.1 Scanned raster / title-block extraction | Done — multimodal, needs `ANTHROPIC_API_KEY` | [document-extract.test.ts](tests/document-extract.test.ts) and [inbound-email.test.ts](tests/inbound-email.test.ts) — `an attached drawing supplies the spec the email left out` |
 | §5.1 Email ingest (inbound webhook) | Done — webhook, not IMAP | [inbound-email.test.ts](tests/inbound-email.test.ts) — RFQ email drafts, duplicate Message-ID is a no-op, non-RFQ creates no quote |
 | §5.1 RFQ detection | Done | [rfq-classify.test.ts](tests/rfq-classify.test.ts) — RFQ/non-RFQ fixtures, and the bias-to-review guard |
 | §5.3 Estimator notified, never the buyer | Done | [inbound-email.test.ts](tests/inbound-email.test.ts) — `a notification is never addressed to the buyer` |
@@ -191,10 +233,14 @@ measured from `npm run backtest` on a real corpus, per PRD §5.4.
 
 Named explicitly so the demo cannot imply otherwise.
 
-- **Scanned raster / title-block OCR.** PRD §5.1 calls this "the actual moat
-  work". Extraction is text and pipe-table only. A scanned print with an
-  illegible title block correctly goes RED, but it goes RED because nothing
-  reads it, not because a reader judged it illegible.
+- **Cost from geometry.** Drawings are read for their *specification* (material,
+  finish, tolerance, revision, quantities). Deriving a *routing* from geometry —
+  cut path length, pierce count, bend count, weld inches — and pricing from it is
+  not built, and is frozen: it is a new price-derivation input. This is the
+  structural cap on the GREEN rate, since a line can only be priced today if the
+  shop has quoted something comparable before. See [ROADMAP.md](ROADMAP.md).
+- **CAD geometry files.** `.step`, `.dwg`, `.dxf` and friends are recorded and
+  reported as unread.
 - **IMAP / mailbox polling.** Inbound email arrives by webhook only
   (see [Inbound email](#inbound-email)). Nothing logs into a mailbox.
 - **Outbound quote sending.** The estimator copies out or marks sent. The only
@@ -240,3 +286,10 @@ Named explicitly so the demo cannot imply otherwise.
 The repo is feature-frozen. [FREEZE.md](FREEZE.md) states what is and is not
 allowed, and the single condition that lifts it: a real shop corpus loaded and a
 measured result in `reports/k3-backtest.md`.
+
+Two scoped overrides are recorded there: inbound email ingest, and reading
+attached drawings. Neither touched the pricing or confidence path.
+
+[ROADMAP.md](ROADMAP.md) is the ordered list of what is still missing — most of
+it deliberately blocked behind that same K3 measurement, with the reason stated
+per item.

@@ -21,8 +21,46 @@ What it did **not** touch, deliberately:
   Classification decides only whether the existing pipeline runs at all.
 - `src/lib/{resolve,pricing,confidence,draft,extract}.ts` — unmodified.
 
-The reasoning below is unchanged by that override, and the lift condition is
-still the only thing that ends the freeze. K3 remains unmeasured.
+## Recorded override: reading attached drawings and PDFs
+
+The owner overrode this freeze a second time, for **document extraction only**.
+Recorded here for the same reason as the first: the freeze history stays
+auditable rather than quietly eroding.
+
+What it covered: reading PDF and image attachments at ingest time
+(`src/lib/documents`), a multimodal extraction path, and folding what a drawing
+says into what the email body said. Most fabrication RFQs carry the ask in the
+body and the specification in an attached print, and until this landed the
+attachment bytes were written to disk and never opened.
+
+Why it does not compromise the measurement this freeze exists to protect:
+
+- **Extraction is upstream of pricing.** It changes which specification fields
+  exist on a line, not how a price is derived from them. `resolve.ts`,
+  `pricing.ts`, `confidence.ts`, `draft.ts`, `cost.ts`, `extract.ts` and
+  `types.ts` are byte-identical, and the K3 backtest runs over a historical
+  corpus that never passes through this path at all.
+- **No new blocker code.** A field read at low legibility is *discarded*, so the
+  existing `missing_material` / `missing_finish` blockers fire naturally. A
+  barely legible line carries the existing `degraded_input`; a drawing that
+  contradicts the email quantity carries the existing `qty_conflict`.
+- **No new Prisma model or column, and no migration.**
+- **No model output can become a price.** The extractor is forbidden a price by
+  both its schema and its prompt, and produces only the `ExtractedFields` shape
+  the text parser already produced.
+- **It is an enhancement, never a dependency.** With no API key, a timeout, or a
+  malformed reply, the attachments are recorded as unread with a stated reason
+  and the RFQ is drafted from the body alone — exactly the previous behaviour.
+
+Evidence: `tests/document-extract.test.ts` (18 tests) and two end-to-end tests
+in `tests/inbound-email.test.ts`.
+
+---
+
+Neither override changes the reasoning below, and the lift condition is still
+the only thing that ends the freeze. K3 remains unmeasured. What is still
+blocked, and the order it should be built in once K3 is measured, is in
+[ROADMAP.md](ROADMAP.md).
 
 ## Why
 
@@ -79,7 +117,10 @@ kill criterion is unevaluated. PRD §2 is explicit that K3 is the one people ski
   `PRICING_CONFIG`** (`src/lib/pricing.ts`). Not tuning, not "improving", not
   rounding. They stay unvalidated until real data measures them — changing one
   now destroys the baseline the first measurement will be read against.
-- **OCR** of scanned raster prints or title blocks.
+- **OCR / document reading** — *lifted for the second recorded override above.*
+  Reading a drawing for its specification is built. Deriving a *routing* from
+  its geometry (cut length, bend count, weld inches) is a new price-derivation
+  input and remains frozen.
 - **Email / IMAP ingest** — *lifted for the recorded override above.* Inbound
   webhook ingest is built; IMAP polling and outbound quote sending are not, and
   remain frozen.

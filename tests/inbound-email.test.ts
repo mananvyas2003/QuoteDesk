@@ -10,6 +10,7 @@ import { normalizeInboundPayload } from "../src/lib/email/normalize";
 import { receiveInboundEmail } from "../src/lib/inbound";
 import { assertNotBuyerAddress, BuyerAddressError } from "../src/lib/notify";
 import type { InboundEmailPayload } from "../src/lib/email/types";
+import type { DocumentExtractor } from "../src/lib/documents";
 
 /**
  * Inbound-mail pipeline guards: receive -> classify -> ingest -> notify.
@@ -280,4 +281,123 @@ test("an HTML-only email is still readable by the extractor", async () => {
   );
 
   assert.equal(outcome.kind, "drafted", JSON.stringify(outcome));
+});
+
+
+/**
+ * End-to-end proof for the document path: an email that carries the ask and a
+ * drawing that carries the specification. Neither is enough alone, which is the
+ * shape of most real fabrication RFQs.
+ *
+ * The extractor is injected, so this asserts the wiring and the merge without
+ * needing an API key or a network call.
+ */
+test("an attached drawing supplies the spec the email left out", async () => {
+  const prisma = await testDb();
+
+  const stubExtractor: DocumentExtractor = async (doc) => ({
+    fileName: doc.fileName,
+    unreadable: false,
+    lines: [
+      {
+        partNumber: "GB-88",
+        finish: "powder coat black",
+        tolerance: "±1/16",
+        revision: "Rev C",
+        confidence: 0.96,
+        page: 1,
+        fieldConfidence: { finish: 0.95, tolerance: 0.92, revision: 0.98 },
+        citations: { finish: { page: 1, snippet: "FINISH: POWDER COAT BLACK" } },
+      },
+    ],
+  });
+
+  const outcome = await receiveInboundEmail(
+    workspaceId,
+    {
+      messageId: "<rfq-with-drawing-1@acme.example>",
+      fromEmail: "dana.whitfield@acmeindustrial.example",
+      fromName: "Dana Whitfield",
+      subject: "RFQ 9001 - guard brackets",
+      // The body states no finish, tolerance or revision. The drawing does.
+      textBody: [
+        "Please quote the following.",
+        "",
+        "GB-88 | Guard bracket laser cut | 200 | A36",
+      ].join("\n"),
+      receivedAt: new Date(),
+      attachments: [
+        {
+          fileName: "GB-88_RevC.pdf",
+          mimeType: "application/pdf",
+          contentBase64: Buffer.from("%PDF-1.7 stub").toString("base64"),
+        },
+      ],
+    },
+    { allowLlm: false, storageDir, documentExtractor: stubExtractor },
+  );
+
+  assert.equal(outcome.kind, "drafted", JSON.stringify(outcome));
+  if (outcome.kind !== "drafted") return;
+
+  const rfq = await prisma.rfq.findUniqueOrThrow({
+    where: { id: outcome.rfqId },
+    include: { lines: true },
+  });
+
+  const line = rfq.lines.find(
+    (l) => JSON.parse(l.extractedFields).partNumber === "GB-88",
+  );
+  assert.ok(line, "the emailed line must survive the merge");
+
+  const fields = JSON.parse(line!.extractedFields);
+  assert.equal(fields.material, "A36", "the body still supplies what it stated");
+  assert.equal(fields.finish, "powder coat black", "the drawing filled the gap");
+  assert.equal(fields.tolerance, "±1/16");
+  assert.equal(fields.revision, "Rev C");
+
+  // PRD 5.1: a field is only extracted if it can be cited back to a location.
+  assert.equal(fields.sources.finish.file, "GB-88_RevC.pdf");
+  assert.equal(fields.sources.finish.page, 1);
+  assert.equal(fields.sources.material.file, "email.txt", "body fields cite the body");
+
+  // The attachment is recorded on the RFQ alongside the body.
+  const refs = JSON.parse(rfq.rawRefs) as Array<{ fileName: string }>;
+  assert.ok(refs.some((r) => r.fileName === "GB-88_RevC.pdf"));
+});
+
+test("an unreadable attachment is stated on the RFQ and the draft still runs", async () => {
+  const prisma = await testDb();
+
+  const outcome = await receiveInboundEmail(
+    workspaceId,
+    {
+      messageId: "<rfq-with-cad-1@acme.example>",
+      fromEmail: "dana.whitfield@acmeindustrial.example",
+      subject: "RFQ 9002 - weldment",
+      textBody: ["Please quote.", "", "GB-88 | Guard bracket laser cut | 200 | A36"].join(
+        "\n",
+      ),
+      receivedAt: new Date(),
+      attachments: [
+        {
+          fileName: "weldment.step",
+          mimeType: "application/octet-stream",
+          contentBase64: Buffer.from("ISO-10303-21;").toString("base64"),
+        },
+      ],
+    },
+    // No extractor and no key: the degraded path, which must still draft.
+    { allowLlm: false, storageDir, documentExtractor: undefined },
+  );
+
+  assert.equal(outcome.kind, "drafted", JSON.stringify(outcome));
+  if (outcome.kind !== "drafted") return;
+
+  const rfq = await prisma.rfq.findUniqueOrThrow({ where: { id: outcome.rfqId } });
+  const refs = JSON.parse(rfq.rawRefs) as Array<{ fileName: string }>;
+  assert.ok(
+    refs.some((r) => r.fileName === "weldment.step"),
+    "an unread attachment is still recorded against the RFQ",
+  );
 });

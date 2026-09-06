@@ -84,6 +84,29 @@ export default async function RfqReviewPage({
 
   if (!rfq || !rfq.quote) notFound();
 
+  /**
+   * Attachments carry the specification on most real RFQs, so the estimator has
+   * to be able to tell an attachment that was read from one that was skipped.
+   * Silence about a skipped drawing reads as "understood", which is the wrong
+   * and expensive assumption.
+   */
+  const attachments = (
+    JSON.parse(rfq.rawRefs || "[]") as Array<{
+      fileName?: string;
+      mimeType?: string;
+      read?: boolean;
+      lineCount?: number;
+      note?: string | null;
+    }>
+  )
+    .filter((a) => a.fileName && a.mimeType !== "text/plain")
+    .map((a) => ({
+      fileName: a.fileName!,
+      read: a.read ?? false,
+      lineCount: a.lineCount ?? 0,
+      note: a.note ?? null,
+    }));
+
   const copyText = buildCopyText({
     subject: rfq.subject,
     answerType: rfq.quote.answerType,
@@ -131,6 +154,32 @@ export default async function RfqReviewPage({
             <pre className="max-h-[28rem] overflow-auto whitespace-pre-wrap rounded bg-[var(--bg)] p-3 font-mono text-xs leading-relaxed text-[var(--ink)]">
               {rfq.rawBody}
             </pre>
+            {attachments.length > 0 && (
+              <div>
+                <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-[var(--ink-muted)]">
+                  Attachments
+                </h3>
+                <ul className="space-y-1.5 text-xs">
+                  {attachments.map((a) => (
+                    <li key={a.fileName} className="flex flex-wrap items-baseline gap-2">
+                      <span className="font-mono text-[var(--ink)]">{a.fileName}</span>
+                      {a.read ? (
+                        <span className="rounded bg-[var(--green-bg)] px-1.5 py-0.5 font-medium text-[var(--green)]">
+                          read · {a.lineCount} line{a.lineCount === 1 ? "" : "s"}
+                        </span>
+                      ) : (
+                        <span className="rounded bg-[var(--amber-bg)] px-1.5 py-0.5 font-medium text-[var(--amber)]">
+                          not read
+                        </span>
+                      )}
+                      {a.note && (
+                        <span className="text-[var(--ink-muted)]">{a.note}</span>
+                      )}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
             <div>
               <h3 className="mb-2 text-xs font-semibold uppercase tracking-wide text-[var(--ink-muted)]">
                 Extracted lines

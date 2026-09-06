@@ -1,6 +1,8 @@
 import { prisma } from "./db";
 import { parseRfqInput } from "./extract";
 import { draftQuoteForRfq } from "./draft";
+import { applyDocumentExtractions, extractDocuments, type DocumentExtractor } from "./documents";
+import type { InboundAttachment } from "./email/types";
 
 export async function ingestRfq(input: {
   workspaceId: string;
@@ -10,14 +12,29 @@ export async function ingestRfq(input: {
   body: string;
   channel?: string;
   fileName?: string;
+  /**
+   * Attachments already written to storage. Their bytes are read here and
+   * nowhere else; the database still holds metadata only.
+   */
+  attachments?: InboundAttachment[];
+  documentOpts?: { extractor?: DocumentExtractor; allowLlm?: boolean };
 }) {
-  const parsed = parseRfqInput({
+  const bodyParsed = parseRfqInput({
     subject: input.subject,
     fromEmail: input.fromEmail,
     fromName: input.fromName,
     body: input.body,
     fileName: input.fileName,
   });
+
+  // Most fabrication RFQs carry the ask in the body and the specification in an
+  // attached drawing. Reading the attachments is what lets a line reach GREEN;
+  // when it is unavailable the body-only parse stands unchanged.
+  const { extractions, skipped } = await extractDocuments(
+    input.attachments,
+    input.documentOpts,
+  );
+  const parsed = applyDocumentExtractions(bodyParsed, extractions, skipped);
 
   let accountId: string | undefined;
   if (parsed.accountHint || input.fromEmail) {
@@ -57,11 +74,25 @@ export async function ingestRfq(input: {
       rawBody: parsed.body,
       deadline: parsed.deadline,
       channel: input.channel ?? "upload",
-      rawRefs: JSON.stringify(
-        input.fileName
+      rawRefs: JSON.stringify([
+        ...(input.fileName
           ? [{ fileName: input.fileName, mimeType: "text/plain", storagePath: null }]
-          : [],
-      ),
+          : []),
+        // Each attachment records whether it was actually read, and why not.
+        // The estimator has to be able to tell "understood" from "ignored".
+        ...(input.attachments ?? []).map((a) => {
+          const read = extractions.find((e) => e.fileName === a.fileName);
+          const skip = skipped.find((s) => s.fileName === a.fileName);
+          return {
+            fileName: a.fileName,
+            mimeType: a.mimeType,
+            storagePath: a.storagePath ?? null,
+            read: Boolean(read),
+            lineCount: read?.lines.length ?? 0,
+            note: skip?.reason ?? read?.note ?? null,
+          };
+        }),
+      ]),
       status: "ingested",
       lines: {
         create: parsed.lines.map((l) => ({
