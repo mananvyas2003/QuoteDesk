@@ -1,4 +1,5 @@
 import type { ParsedRfq, ParsedRfqLine } from "../extract";
+import { findFinish, findMaterial, findRevision, findTolerance } from "../specs";
 import {
   BLOCKER_CODES,
   type Blocker,
@@ -61,7 +62,7 @@ export function applyDocumentExtractions(
 
   for (const extraction of extractions) {
     for (const docLine of extraction.lines) {
-      const usable = withLowConfidenceFieldsDropped(docLine);
+      const usable = canonicaliseSpecs(withLowConfidenceFieldsDropped(docLine));
       if (!hasAnyContent(usable)) continue;
 
       const match = findMatch(lines, usable);
@@ -108,6 +109,31 @@ function withLowConfidenceFieldsDropped(line: DocumentLine): DocumentLine {
     }
   }
   return out;
+}
+
+/**
+ * Put document specs through the same recognisers the body parser uses.
+ *
+ * A title block says `MATERIAL: ASTM A36 HR PLATE, 0.250 THK`; the body parser
+ * would canonicalise that to `A36` via `specs.ts`. Without this step the two
+ * paths produce different values for the same material, and the capability
+ * envelope — which compares against a list of canonical materials — sends a
+ * perfectly quotable line to RED for a reason that has nothing to do with the
+ * part. That is a worse failure than not reading the drawing at all, because it
+ * looks like a considered judgement.
+ *
+ * A value no recogniser knows is kept verbatim rather than dropped. It was
+ * plainly stated on the drawing, so the envelope check should fail it honestly;
+ * dropping it would silently become "material not specified".
+ */
+function canonicaliseSpecs(line: DocumentLine): DocumentLine {
+  return {
+    ...line,
+    material: findMaterial(line.material ?? "")?.value ?? line.material,
+    finish: findFinish(line.finish ?? "")?.value ?? line.finish,
+    tolerance: findTolerance(line.tolerance ?? "")?.value ?? line.tolerance,
+    revision: findRevision(line.revision ?? "")?.value ?? line.revision,
+  };
 }
 
 function hasAnyContent(line: DocumentLine): boolean {

@@ -56,7 +56,8 @@ export async function extractDocuments(
         ...skipped,
         ...documents.map((d) => ({
           fileName: d.fileName,
-          reason: "document reading is not configured (ANTHROPIC_API_KEY is unset)",
+          reason:
+            "document reading is not configured (set GEMINI_API_KEY or ANTHROPIC_API_KEY)",
         })),
       ],
     };
@@ -86,11 +87,46 @@ export async function extractDocuments(
   return { extractions, skipped: [...skipped, ...failed] };
 }
 
+export type DocumentProvider = "anthropic" | "gemini";
+
+/**
+ * Which provider reads documents.
+ *
+ * `DOCUMENT_MODEL_PROVIDER` names one explicitly. Unset, the first provider
+ * with a key configured wins, in the order below. Returning `undefined` — no
+ * key at all — is a supported state, not an error: the attachments are recorded
+ * as unread with the reason stated, and the draft proceeds from the body.
+ */
+export function selectProvider(): DocumentProvider | undefined {
+  const explicit = process.env.DOCUMENT_MODEL_PROVIDER?.trim().toLowerCase();
+  if (explicit === "none") return undefined;
+  if (explicit === "anthropic" || explicit === "gemini") {
+    return hasKey(explicit) ? explicit : undefined;
+  }
+  if (hasKey("anthropic")) return "anthropic";
+  if (hasKey("gemini")) return "gemini";
+  return undefined;
+}
+
+function hasKey(provider: DocumentProvider): boolean {
+  return provider === "anthropic"
+    ? Boolean(process.env.ANTHROPIC_API_KEY)
+    : Boolean(process.env.GEMINI_API_KEY);
+}
+
 function defaultExtractor(allowLlm?: boolean): DocumentExtractor | undefined {
   if (allowLlm === false) return undefined;
-  if (!process.env.ANTHROPIC_API_KEY) return undefined;
+  const provider = selectProvider();
+  if (!provider) return undefined;
+
+  if (provider === "gemini") {
+    return async (doc) => {
+      const { extractWithGemini } = await import("./geminiExtract");
+      return extractWithGemini(doc);
+    };
+  }
   return async (doc) => {
-    const { extractWithClaude } = await import("./visionExtract");
+    const { extractWithClaude } = await import("./anthropicExtract");
     return extractWithClaude(doc);
   };
 }

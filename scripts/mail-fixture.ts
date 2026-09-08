@@ -12,12 +12,19 @@
  * /api/inbound-email instead, which exercises the HTTP layer and the shared
  * secret too.
  */
+// Load .env so DATABASE_URL and the document-extraction key are present when
+// this is run directly rather than through Next.
+import "dotenv/config";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 
 const DEFAULT_FIXTURES = [
   "scripts/fixtures/sample-rfq.eml",
   "scripts/fixtures/sample-not-rfq.eml",
+  // Carries a PDF whose title block holds the material, finish, tolerance and
+  // revision the email body omits. Without a document key configured this one
+  // still drafts, reporting the attachment as unread.
+  "scripts/fixtures/sample-rfq-with-drawing.eml",
 ];
 
 async function main() {

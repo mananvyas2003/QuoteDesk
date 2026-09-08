@@ -90,7 +90,10 @@ See [`.env.example`](.env.example). The ones that matter:
 | `NOTIFY_EMAIL` | no | Who gets the "draft ready" email. Defaults to the workspace estimator. |
 | `NOTIFY_FROM_EMAIL`, `RESEND_API_KEY` | no | Outbound notification mail. Unset → in-app notification only, recorded as `not_sent:no_provider_configured`. |
 | `APP_URL` | no | Base URL used in notification links. |
-| `ANTHROPIC_API_KEY` | no | Two uses: a second opinion on borderline classifications, and reading attached drawings. Unset → rules-only classification and attachments recorded as unread. Both are fully supported. |
+| `GEMINI_API_KEY` | no | Reads attached drawings. Free tier at [aistudio.google.com](https://aistudio.google.com). |
+| `ANTHROPIC_API_KEY` | no | A second opinion on borderline classifications, and reading drawings when selected. |
+| `DOCUMENT_MODEL_PROVIDER` | no | `anthropic`, `gemini`, or `none`. Unset → the first provider with a key, in that order. |
+| `GEMINI_MODEL` | no | Pinned to `gemini-3.6-flash`. A moving alias would change behaviour silently. |
 | `DOCUMENT_MAX_COUNT`, `DOCUMENT_MAX_BYTES` | no | Caps on documents read per RFQ (default 5) and per-document size (default 8MB). |
 
 ### RFQ detection
@@ -175,6 +178,40 @@ say is folded into what the body said:
   and the draft proceeds from the body alone. An estimator told nothing would
   assume the drawing was understood.
 - **Caps are enforced before bytes are read**: 5 documents per RFQ, 8MB each.
+- **Specs are canonicalised through the same recognisers the body parser uses.**
+  A title block reading `MATERIAL: ASTM A36 HR PLATE, 0.250 THK` becomes `A36`.
+  Without that step the capability envelope compares a raw title-block string
+  against a list of canonical materials and sends a quotable line to RED for a
+  reason that has nothing to do with the part — a worse failure than not reading
+  the drawing, because it looks like a considered judgement. A value no
+  recogniser knows is kept verbatim so the envelope can fail it honestly.
+
+### Providers
+
+Two are implemented behind one `DocumentExtractor` seam, sharing a single
+prompt and normalisation (`src/lib/documents/prompt.ts`) so they cannot drift on
+what "extracted" means. Only the wire format differs.
+
+| | |
+|---|---|
+| **Gemini** | `GEMINI_API_KEY`. Free tier, no card, native PDF input. REST, no SDK dependency. Retries 429/503 — the free tier returns "high demand" routinely, and without a retry a drawing would fail to be read for reasons unrelated to the drawing. |
+| **Anthropic** | `ANTHROPIC_API_KEY`. Native PDF input via the official SDK. |
+
+A note on data terms: Gemini's free tier may use prompts to improve Google
+products. That suits development. A shop's real customer drawings are usually
+the buyer's IP and frequently under NDA, so a pilot needs paid terms, a
+zero-retention option, or a self-hosted model.
+
+### Try it
+
+```bash
+npm run mail:fixture -- scripts/fixtures/sample-rfq-with-drawing.eml
+```
+
+The email body states only the part number, description and quantity. The
+attached PDF's title block supplies material, finish, tolerance and revision.
+With no key configured the same command still drafts, reporting the attachment
+as unread.
 
 ## Demo path
 
