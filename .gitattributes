@@ -1,0 +1,5 @@
+# The mail and drawing fixtures are binary in practice: an .eml carries CRLF as
+# protocol, not as formatting, and a .pdf has byte offsets in its xref table.
+# Letting git normalise either one corrupts it on checkout.
+*.pdf binary
+*.eml -text
